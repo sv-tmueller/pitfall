@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveAndCollide, Tile, tileAt, type Body } from './physics';
+import { moveAndCollide, Tile, tileAt, type Body, type SolidRect } from './physics';
 import { parseGrid } from './testGrid';
 
 const DT = 1 / 60;
@@ -185,5 +185,76 @@ describe('moveAndCollide - terminal-speed fall never tunnels', () => {
     expect(result.body.velocity.y).toBe(0);
     expect(result.body.grounded).toBe(true);
     expect(result.hitCeiling).toBe(false);
+  });
+});
+
+describe('moveAndCollide - dynamic solids', () => {
+  // An empty tile grid so only the dynamic solids can affect the result.
+  const emptyGrid = parseGrid(['...', '...', '...', '...']);
+
+  it('blocks horizontal movement against a solid, zeroing vx', () => {
+    const wall: SolidRect = { x: 48, y: 16, width: 16, height: 16 };
+    const body = makeBody({ x: 32, y: 16, velocity: { x: 240, y: 0 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [wall]);
+
+    expect(result.body.x).toBe(32);
+    expect(result.body.velocity.x).toBe(0);
+    expect(result.hitWall).toBe(true);
+  });
+
+  it('blocks horizontal movement from the left side of a solid, zeroing vx', () => {
+    const wall: SolidRect = { x: 16, y: 0, width: 16, height: 16 };
+    const body = makeBody({ x: 33, y: 0, velocity: { x: -240, y: 0 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [wall]);
+
+    expect(result.body.x).toBe(32);
+    expect(result.body.velocity.x).toBe(0);
+    expect(result.hitWall).toBe(true);
+  });
+
+  it('lands on the top face of a solid, setting grounded', () => {
+    const platform: SolidRect = { x: 0, y: 32, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 14, velocity: { x: 0, y: 240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform]);
+
+    expect(result.body.y).toBe(16);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.body.grounded).toBe(true);
+    expect(result.hitCeiling).toBe(false);
+  });
+
+  it('bumps the head on the bottom face of a solid, zeroing vy', () => {
+    const ceiling: SolidRect = { x: 0, y: 0, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 18, velocity: { x: 0, y: -240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [ceiling]);
+
+    expect(result.body.y).toBe(16);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.hitCeiling).toBe(true);
+    expect(result.body.grounded).toBe(false);
+  });
+
+  it('does not block a body standing flush on top of a solid (strict inequalities)', () => {
+    const platform: SolidRect = { x: 0, y: 32, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 16, velocity: { x: 120, y: 15 }, grounded: true });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform]);
+
+    expect(result.hitWall).toBe(false);
+    expect(result.body.grounded).toBe(true);
+  });
+
+  it('is equivalent to the no-solids path when passed an empty array', () => {
+    const grid = parseGrid(['...', '...', '###']);
+    const body = makeBody({ x: 4, y: 10, velocity: { x: 120, y: 400 } });
+
+    const baseline = moveAndCollide(body, grid, DT);
+    const withEmpty = moveAndCollide(body, grid, DT, []);
+
+    expect(withEmpty).toEqual(baseline);
   });
 });

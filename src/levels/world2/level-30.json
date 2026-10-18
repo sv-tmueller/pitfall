@@ -138,7 +138,7 @@
         "height": 16,
         "dx": 1,
         "dy": 0,
-        "speed": 1,
+        "speed": 60,
         "distance": 48
       }
     },

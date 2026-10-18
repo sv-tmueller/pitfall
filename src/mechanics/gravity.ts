@@ -2,7 +2,7 @@
 // Wrapper around stepController that negates gravity and jump when inverted.
 
 import { stepController, type ControllerActions, type ControllerState } from '../engine/controller';
-import type { TileGrid } from '../engine/physics';
+import type { SolidRect, TileGrid } from '../engine/physics';
 
 export type GravityDirection = 1 | -1;
 
@@ -34,9 +34,10 @@ export function stepControllerWithGravity(
   grid: TileGrid,
   dt: number,
   gravityDir: GravityDirection,
+  solids: readonly SolidRect[] = [],
 ): ControllerState {
   if (gravityDir === 1) {
-    return stepController(state, actions, grid, dt);
+    return stepController(state, actions, grid, dt, solids);
   }
   // Inverted: negate jump press (jump goes DOWN), swap up/down semantics
   const invertedActions: ControllerActions = {
@@ -45,7 +46,7 @@ export function stepControllerWithGravity(
     jumpHeld: actions.jumpHeld,
   };
   // Step normally, then flip the vertical velocity and position
-  const result = stepController(state, invertedActions, grid, dt);
+  const result = stepController(state, invertedActions, grid, dt, solids);
   // Negate vy to simulate inverted gravity (the controller applied +gravity, we want -gravity)
   return {
     ...result,

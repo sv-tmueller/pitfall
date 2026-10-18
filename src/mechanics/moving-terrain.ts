@@ -8,9 +8,9 @@ export interface MovingPlatform {
   startX: number; startY: number;
   width: number; height: number;
   dx: number; dy: number;   // direction vector (normalized)
-  speed: number;              // pixels per step
+  speed: number;              // pixels per second
   distance: number;          // max travel distance
-  traveled: number;           // current distance traveled
+  traveled: number;           // ping-pong phase in [0, 2 * distance)
   direction: 1 | -1;          // current travel direction
 }
 
@@ -26,20 +26,38 @@ export function createMovingPlatform(
   };
 }
 
-export function stepMovingPlatform(platform: MovingPlatform, _dt: number): MovingPlatform {
-  void _dt;
-  const move = platform.speed * platform.direction;
-  const newX = platform.x + platform.dx * move;
-  const newY = platform.y + platform.dy * move;
-  let traveled = platform.traveled + Math.abs(move);
-  let dir = platform.direction;
-
-  if (traveled >= platform.distance) {
-    traveled = 0;
-    dir = (platform.direction === 1 ? -1 : 1) as 1 | -1;
+/**
+ * Advances a ping-pong platform by speed * dt pixels (speed is px/s).
+ *
+ * Position is derived from a triangle wave over the ping-pong phase rather
+ * than accumulated incrementally, so a step that overruns the end of the leg
+ * spends its overshoot travelling back (the remainder is reflected) instead
+ * of parking the platform past its authored range. The travelled band is
+ * therefore [start, start + (dx,dy) * distance] forever, on every turnaround.
+ */
+export function stepMovingPlatform(platform: MovingPlatform, dt: number): MovingPlatform {
+  if (platform.distance <= 0) {
+    return platform;
   }
 
-  return { ...platform, x: newX, y: newY, traveled, direction: dir };
+  const stepLen = platform.speed * dt;
+  const cycle = platform.distance * 2;
+  let phase = (platform.traveled + stepLen) % cycle;
+  if (phase < 0) {
+    phase += cycle;
+  }
+
+  const onForwardLeg = phase <= platform.distance;
+  const offset = onForwardLeg ? phase : cycle - phase;
+  const direction = (onForwardLeg ? 1 : -1) as 1 | -1;
+
+  return {
+    ...platform,
+    x: platform.startX + platform.dx * offset,
+    y: platform.startY + platform.dy * offset,
+    traveled: phase,
+    direction,
+  };
 }
 
 export function isPlayerOnPlatform(platform: MovingPlatform, playerBody: Body): boolean {

@@ -237,6 +237,10 @@ import {
   type MovingPlatform,
 } from './moving-terrain';
 import type { DynamicSolid } from '../traps/types';
+// The sim runs at a fixed 60 Hz (loop.ts owns the DT contract), so the
+// per-step displacement is velocity * DT without threading dt through
+// MechanicContext.
+import { DT } from '../engine/loop';
 
 export function createMovingPlatformMechanic(entry: MechanicEntry): MechanicInstance {
   const startX = reqNumber(entry.params, 'startX');
@@ -266,7 +270,7 @@ export function createMovingPlatformMechanic(entry: MechanicEntry): MechanicInst
         solid: true,
         lethal: false,
       };
-      platform = stepMovingPlatform(platform, 1);
+      platform = stepMovingPlatform(platform, DT);
       return { dynamicSolids: [solid] };
     },
     reset() {

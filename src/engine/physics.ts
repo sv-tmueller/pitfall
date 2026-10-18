@@ -18,6 +18,19 @@ export interface Body extends AABB {
   grounded: boolean;
 }
 
+/**
+ * Engine-local structural rectangle for a dynamic solid (crusher, shifting
+ * wall, moving platform). Structurally compatible with the trap/mechanic
+ * DynamicSolid so callers can pass those directly, keeping the dependency
+ * direction intact: the engine never imports src/traps or src/mechanics.
+ */
+export interface SolidRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 // const-object stand-in for a const enum: isolatedModules rules const enum out.
 export const Tile = { Empty: 0, Solid: 1, OneWay: 2 } as const;
 export type Tile = (typeof Tile)[keyof typeof Tile];
@@ -57,10 +70,23 @@ function spanEnd(pos: number, size: number): number {
   return Math.ceil((pos + size) / TILE_SIZE) - 1;
 }
 
+// Strict-inequality interval overlap, matching aabbOverlap's convention: a
+// flush edge (equality) reads as no overlap. Used to decide whether a body
+// shares a row span / column span with a dynamic solid before the solid's
+// face is treated as a blocking plane.
+function verticalRangesOverlap(body: AABB, solid: SolidRect): boolean {
+  return body.y < solid.y + solid.height && body.y + body.height > solid.y;
+}
+
+function horizontalRangesOverlap(body: AABB, solid: SolidRect): boolean {
+  return body.x < solid.x + solid.width && body.x + body.width > solid.x;
+}
+
 function resolveX(
   body: Body,
   grid: TileGrid,
   dt: number,
+  solids: readonly SolidRect[],
 ): { x: number; vx: number; hitWall: boolean } {
   const vx = body.velocity.x;
   let x = body.x + vx * dt;
@@ -79,6 +105,17 @@ function resolveX(
           break;
         }
       }
+      // Dynamic solids: a leading left face blocks like a wall. The body
+      // must have started flush with or left of that face, so a body already
+      // inside the solid is never pushed out (no depenetration here).
+      for (const solid of solids) {
+        if (!verticalRangesOverlap(body, solid)) continue;
+        const stop = solid.x - body.width;
+        if (x + body.width > solid.x && body.x + body.width <= solid.x && stop < x) {
+          x = stop;
+          hitWall = true;
+        }
+      }
     } else {
       const col = spanStart(x);
       for (let row = minRow; row <= maxRow; row++) {
@@ -86,6 +123,16 @@ function resolveX(
           x = (col + 1) * TILE_SIZE;
           hitWall = true;
           break;
+        }
+      }
+      // Dynamic solids: a trailing right face blocks like a wall, again only
+      // for a body that started flush with or right of that face.
+      for (const solid of solids) {
+        if (!verticalRangesOverlap(body, solid)) continue;
+        const stop = solid.x + solid.width;
+        if (x < stop && body.x >= stop && stop > x) {
+          x = stop;
+          hitWall = true;
         }
       }
     }
@@ -98,6 +145,7 @@ function resolveY(
   body: Body,
   grid: TileGrid,
   dt: number,
+  solids: readonly SolidRect[],
 ): { y: number; vy: number; hitCeiling: boolean; grounded: boolean } {
   const vy = body.velocity.y;
   const originalBottom = body.y + body.height;
@@ -124,6 +172,18 @@ function resolveY(
         break;
       }
     }
+    // Dynamic solids: land on the top face. The body must have started at or
+    // above that face, mirroring the one-way rule and preventing pull-out
+    // from inside a solid the body already overlaps.
+    for (const solid of solids) {
+      if (!horizontalRangesOverlap(body, solid)) continue;
+      const stop = solid.y - body.height;
+      if (originalBottom <= solid.y && y + body.height > solid.y && stop < y) {
+        y = stop;
+        resolvedVy = 0;
+        grounded = true;
+      }
+    }
   } else {
     const row = spanStart(y);
     for (let col = minCol; col <= maxCol; col++) {
@@ -132,6 +192,17 @@ function resolveY(
         resolvedVy = 0;
         hitCeiling = true;
         break;
+      }
+    }
+    // Dynamic solids: bump the head on the bottom face, only for a body that
+    // started at or below that face.
+    for (const solid of solids) {
+      if (!horizontalRangesOverlap(body, solid)) continue;
+      const stop = solid.y + solid.height;
+      if (body.y >= stop && y < stop && stop > y) {
+        y = stop;
+        resolvedVy = 0;
+        hitCeiling = true;
       }
     }
   }
@@ -158,15 +229,25 @@ export function aabbOverlap(a: AABB, b: AABB): boolean {
 // With velocity.y === 0 the downward probe row is the body's own bottom row,
 // so a resting body reports grounded: false; callers must apply gravity
 // first (stepController guarantees vy >= 15).
-export function moveAndCollide(body: Body, grid: TileGrid, dt: number): CollisionResult {
-  const xResult = resolveX(body, grid, dt);
+//
+// The optional solids list adds dynamic-solid blocking on top of the tile
+// grid: solid rectangles stop horizontal motion at their faces and act as
+// landable tops / head-bumpable undersides. The default empty array keeps
+// the tile-grid-only behavior for every existing caller.
+export function moveAndCollide(
+  body: Body,
+  grid: TileGrid,
+  dt: number,
+  solids: readonly SolidRect[] = [],
+): CollisionResult {
+  const xResult = resolveX(body, grid, dt, solids);
   const bodyAfterX: Body = {
     ...body,
     x: xResult.x,
     velocity: { x: xResult.vx, y: body.velocity.y },
   };
 
-  const yResult = resolveY(bodyAfterX, grid, dt);
+  const yResult = resolveY(bodyAfterX, grid, dt, solids);
   const resolvedBody: Body = {
     ...bodyAfterX,
     y: yResult.y,
