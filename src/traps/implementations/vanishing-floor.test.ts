@@ -416,3 +416,150 @@ describe('vanishing-floor: determinism', () => {
     expect(b).toEqual(a);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Lifecycle: exact timing, original-tile restore, single return, player safety
+// (issue #160)
+// ---------------------------------------------------------------------------
+
+describe('vanishing-floor: lifecycle (issue #160)', () => {
+  /** Mirrors the runtime's per-step contract: fire once, then animate. */
+  function drive(trap: ReturnType<typeof createTrap>, world: WorldState, steps: number): void {
+    for (let step = 0; step < steps; step++) {
+      if (!trap.fired) {
+        if (trap.evaluate(world, step)) {
+          trap.fired = true;
+          trap.apply(world);
+        }
+      } else {
+        trap.apply(world);
+      }
+      trap.stepsSinceArm++;
+    }
+  }
+
+  it('an on-timer floor vanishes at exactly delaySteps, not twice the delay', () => {
+    registerVanishingFloor();
+    const trap = createTrap({
+      id: 'vf-timer-exact',
+      type: 'vanishing-floor',
+      trigger: 'on-timer',
+      params: { tiles: [{ col: 0, row: 2 }], delaySteps: 5, returns: false },
+    });
+
+    const cols = 4;
+    const tiles = new Array(cols * 3).fill(Tile.Solid);
+    const world = makeWorld({ tiles });
+
+    // Steps 0 through 4: still there.
+    drive(trap, world, 5);
+    expect(tiles[2 * cols + 0]).toBe(Tile.Solid);
+
+    // Step 5: the authored delay has elapsed, the floor is gone.
+    drive(trap, world, 1);
+    expect(tiles[2 * cols + 0]).toBe(Tile.Empty);
+  });
+
+  it('restore replays the recorded originals instead of forcing Solid', () => {
+    registerVanishingFloor();
+    const cols = 4;
+    const tiles = new Array(cols * 3).fill(Tile.Solid);
+    tiles[2 * cols + 1] = Tile.OneWay; // (1,2) authored as a one-way ledge
+    tiles[2 * cols + 2] = Tile.Empty;  // (2,2) authored as a pit
+
+    const trap = createTrap({
+      id: 'vf-originals',
+      type: 'vanishing-floor',
+      trigger: 'on-land',
+      params: {
+        tiles: [
+          { col: 0, row: 2 },
+          { col: 1, row: 2 },
+          { col: 2, row: 2 },
+        ],
+        delaySteps: 0,
+        returns: true,
+        returnDelaySteps: 0,
+      },
+    });
+
+    const world = makeWorld({ cols, tiles });
+
+    trap.apply(world);
+    expect(tiles[2 * cols + 0]).toBe(Tile.Empty);
+    expect(tiles[2 * cols + 1]).toBe(Tile.Empty);
+    expect(tiles[2 * cols + 2]).toBe(Tile.Empty);
+
+    trap.apply(world); // returnDelaySteps 0: restored on the next apply
+    expect(tiles[2 * cols + 0]).toBe(Tile.Solid);
+    expect(tiles[2 * cols + 1]).toBe(Tile.OneWay);
+    expect(tiles[2 * cols + 2]).toBe(Tile.Empty);
+  });
+
+  it('a returning floor restores at most once and then no-ops', () => {
+    registerVanishingFloor();
+    const cols = 4;
+    const tiles = new Array(cols * 3).fill(Tile.Solid);
+    const trap = createTrap({
+      id: 'vf-once',
+      type: 'vanishing-floor',
+      trigger: 'on-land',
+      params: {
+        tiles: [{ col: 0, row: 2 }],
+        delaySteps: 0,
+        returns: true,
+        returnDelaySteps: 2,
+      },
+    });
+
+    const world = makeWorld({ cols, tiles });
+
+    trap.apply(world); // vanish
+    trap.apply(world); // wait 1
+    expect(tiles[2 * cols + 0]).toBe(Tile.Empty);
+    trap.apply(world); // wait 2 -> restore
+    expect(tiles[2 * cols + 0]).toBe(Tile.Solid);
+
+    // The runtime's animation pass keeps calling apply() forever; the floor
+    // must never vanish a second time.
+    for (let i = 0; i < 50; i++) {
+      trap.apply(world);
+      expect(tiles[2 * cols + 0]).toBe(Tile.Solid);
+    }
+  });
+
+  it('never restores a tile into the player: a parked body defers the return', () => {
+    registerVanishingFloor();
+    const cols = 4;
+    const tiles = new Array(cols * 3).fill(Tile.Solid);
+    const trap = createTrap({
+      id: 'vf-parked',
+      type: 'vanishing-floor',
+      trigger: 'on-land',
+      params: {
+        tiles: [
+          { col: 0, row: 2 },
+          { col: 1, row: 2 },
+        ],
+        delaySteps: 0,
+        returns: true,
+        returnDelaySteps: 0,
+      },
+    });
+
+    // Body parked over tile (0,2): rect (0,32)-(16,48).
+    const world = makeWorld({ cols, tiles, playerBody: makeBody(0, 32, false) });
+
+    trap.apply(world); // vanish both
+    trap.apply(world); // return attempt
+
+    // The occupied tile stays vanished; the clear one comes back.
+    expect(tiles[2 * cols + 0]).toBe(Tile.Empty);
+    expect(tiles[2 * cols + 1]).toBe(Tile.Solid);
+
+    // Once the player walks clear, the deferred tile returns.
+    world.playerBody = makeBody(200, 0, false);
+    trap.apply(world);
+    expect(tiles[2 * cols + 0]).toBe(Tile.Solid);
+  });
+});
