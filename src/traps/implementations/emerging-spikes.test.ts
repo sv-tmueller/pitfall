@@ -490,3 +490,77 @@ describe('emerging-spikes: determinism', () => {
     expect(b).toEqual(a);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Repeating siblings: stable hazard identity across cycles (issue #160)
+// ---------------------------------------------------------------------------
+
+describe('emerging-spikes: repeating siblings keep hazard identity', () => {
+  function makeRepeating(id: string, col: number): ReturnType<typeof createTrap> {
+    return createTrap({
+      id,
+      type: 'emerging-spikes',
+      trigger: 'on-enter',
+      params: {
+        surface: 'floor',
+        col,
+        row: 1,
+        extendSteps: 2,
+        retractSteps: 2,
+        repeats: true,
+      },
+    });
+  }
+
+  it('two out-of-phase repeating spikes cycle without stale or duplicate hazards', () => {
+    registerEmergingSpikes();
+    const world = makeWorld({ cols: 6, rows: 3 });
+    const a = makeRepeating('spike-a', 1);
+    const b = makeRepeating('spike-b', 3);
+
+    let sawBothExtended = false;
+    // b enters the cycle one step after a: interleaved, out of phase.
+    a.apply(world);
+    for (let s = 0; s < 60; s++) {
+      a.apply(world);
+      b.apply(world);
+
+      // At every sampled step: at most one rect per spike (no orphan), no
+      // zero-height stale rect, and no two rects sharing a column.
+      expect(world.hazards.length).toBeLessThanOrEqual(2);
+      for (const h of world.hazards) {
+        expect(h.height).toBeGreaterThan(0);
+      }
+      const cols = world.hazards.map((h) => h.x);
+      expect(new Set(cols).size).toBe(cols.length);
+      if (world.hazards.length === 2) sawBothExtended = true;
+    }
+    expect(sawBothExtended).toBe(true);
+  });
+
+  it('a sibling retracting fully does not orphan the other spike rect', () => {
+    registerEmergingSpikes();
+    const world = makeWorld({ cols: 6, rows: 3 });
+    const a = makeRepeating('spike-a', 1);
+    const b = makeRepeating('spike-b', 3);
+
+    // Both fully extended: two live hazards.
+    a.apply(world);
+    a.apply(world);
+    b.apply(world);
+    b.apply(world);
+    expect(world.hazards.length).toBe(2);
+
+    // Retract a to nothing (this splices a's rect out of the shared array).
+    a.apply(world);
+    a.apply(world);
+    expect(world.hazards.length).toBe(1);
+
+    // Retract b to nothing: identity tracking must find and remove b's own
+    // rect even though a's splice shifted every index. Index-based tracking
+    // left b's rect behind here.
+    b.apply(world);
+    b.apply(world);
+    expect(world.hazards.length).toBe(0);
+  });
+});
