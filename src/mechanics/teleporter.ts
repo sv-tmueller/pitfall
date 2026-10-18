@@ -30,11 +30,21 @@ export function stepTeleporter(tp: Teleporter, _dt: number): Teleporter {
   return { ...tp, currentCooldown: tp.currentCooldown - 1 };
 }
 
-export function checkTeleport(tp: Teleporter, body: Body): boolean {
-  if (tp.currentCooldown > 0) return false;
+/**
+ * Geometry-only overlap test. Ignores the cooldown so the contact hook can
+ * track whether the body is currently inside the portal volume (used to
+ * re-arm the trigger after the body leaves) independently of whether a
+ * relocation is allowed this step.
+ */
+export function teleporterOverlaps(tp: Teleporter, body: Body): boolean {
   return aabbOverlap(body, {
     x: tp.x, y: tp.y, width: tp.width, height: tp.height,
   });
+}
+
+export function checkTeleport(tp: Teleporter, body: Body): boolean {
+  if (tp.currentCooldown > 0) return false;
+  return teleporterOverlaps(tp, body);
 }
 
 export function applyTeleport(tp: Teleporter, body: Body): Body {

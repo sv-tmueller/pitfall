@@ -25,13 +25,13 @@ import { createRuntime, resetTraps, stepTraps, type TrapRuntime } from '../traps
 import { registerAllTrapTypes } from '../traps/implementations';
 import type { DynamicSolid } from '../traps/types';
 import {
+  applyMechanicContacts,
   createMechanicsRuntime,
   resetMechanics,
   stepMechanics,
   type MechanicsRuntime,
 } from '../mechanics/runtime';
 import { registerAllMechanicTypes } from '../mechanics/register';
-import { checkSpringContact, checkTeleporterContact } from '../mechanics/adapters';
 
 // Register every concrete trap and mechanic factory once at module load so
 // createRuntime / createMechanicsRuntime can resolve any type a level declares.
@@ -64,10 +64,12 @@ export interface SceneState {
   /**
    * The mechanics runtime owns the continuous mechanic instances (springs,
    * teleporters, moving platforms, etc.) and published effect buffers
-   * (dynamic solids, hazards, cosmetic effects). Stepped once per frame
-   * before the controller to collect input/body modifications; contact
-   * checks (springs, teleporters) run after the controller resolves the
-   * new position. Reset on respawn and rebuilt on level advance.
+   * (dynamic solids, hazards, merged overrides, cosmetic effects). Stepped
+   * once per frame before the controller to collect input/body overrides and
+   * to publish solids/hazards; the runtime's contact pass then runs after the
+   * controller resolves the new position, so spring and teleporter cooldowns
+   * live in the instances rather than in the scene. Reset on respawn and
+   * rebuilt on level advance.
    */
   readonly mechanicsRuntime: MechanicsRuntime;
   /** Monotonically increasing sim step counter, fed to stepTraps. */
@@ -258,10 +260,10 @@ function stepPlaying(
   }
 
   // 2. PRE-CONTROLLER PHASE: Step mechanics with the current body and input
-  //    state. This collects actionsOverride (control inversion), velocityMod
-  //    (jetpack), and advances continuous mechanic state (platforms, buzzsaws,
-  //    fuses, cosmetic timers). Published solids/hazards are buffered for the
-  //    collide solve and the post-controller merge.
+  //    state. This collects the merged overrides (actionsOverride for control
+  //    inversion, velocityMod for the jetpack, bodyOverride) and advances
+  //    continuous mechanic state (platforms, buzzsaws, fuses, cosmetic
+  //    timers). Published solids/hazards are buffered for the collide solve.
   const rawActions: ControllerActions = {
     left: actions.left,
     right: actions.right,
@@ -272,6 +274,7 @@ function stepPlaying(
   const prevGrounded = state.controller.body.grounded;
 
   stepMechanics(state.mechanicsRuntime, state.controller.body, rawActions, step);
+  const overrides = state.mechanicsRuntime.publishedOverrides;
 
   // 2b. Snapshot trap-owned solid positions before stepTraps advances them, so
   //     the crush check below can tell which solids moved into the player.
@@ -287,13 +290,10 @@ function stepPlaying(
   //    through the dynamic-solid list collected here, which is what stops a
   //    crusher, blocks a shifting wall, and lets a platform carry the player.
   //
-  //    Note: actionsOverride from mechanics (e.g. control inversion) is not
-  //    re-applied here because the mechanic's step() already processed the
-  //    raw actions internally. The controller receives the original player
-  //    input; mechanics that modify input (control inversion) do so by
-  //    transforming the body's response, not by intercepting the controller.
-  //    This is consistent with how the gravity module works: it wraps
-  //    stepController rather than changing the actions.
+  //    The controller receives the merged actions: a mechanic that transforms
+  //    input (control inversion) publishes actionsOverride, which replaces the
+  //    raw input when present. Mechanic velocity modifications are applied to
+  //    the resolved body just below, not threaded through the solve.
   const grid: TileGrid = {
     cols: state.runtime.world.cols,
     rows: state.runtime.world.rows,
@@ -305,33 +305,43 @@ function stepPlaying(
     state.mechanicsRuntime.publishedSolids,
     dt,
   );
+  const effectiveActions = overrides.actionsOverride ?? rawActions;
   let controller = stepController(
     { ...state.controller, body: carriedBody },
-    rawActions,
+    effectiveActions,
     grid,
     dt,
     activeSolids,
   );
 
-  // 4. POST-CONTROLLER CONTACT CHECKS: Springs and teleporters detect contact
-  //    against the RESOLVED post-move body and may override position/velocity.
-  //    These use the dedicated checkSpringContact/checkTeleporterContact
-  //    helpers (separate from the per-frame step() which only advances
-  //    cooldowns). Last writer wins for bodyOverride.
-  let body = controller.body;
-  const mechEntries = state.level.mechanics ?? [];
-  for (const entry of mechEntries) {
-    if (entry.type === 'spring') {
-      const contact = checkSpringContact(entry, body);
-      if (contact !== null) {
-        body = contact.body;
-      }
-    } else if (entry.type === 'teleporter') {
-      const contact = checkTeleporterContact(entry, body);
-      if (contact !== null) {
-        body = contact.body;
-      }
-    }
+  // 3b. Apply the merged velocity modification (jetpack thrust) additively to
+  //     the resolved body's velocity. Acting on the post-controller velocity
+  //     makes the modification effective from the next integration step.
+  const vmod = overrides.velocityMod;
+  if (vmod.x !== 0 || vmod.y !== 0) {
+    controller = {
+      ...controller,
+      body: {
+        ...controller.body,
+        velocity: {
+          x: controller.body.velocity.x + vmod.x,
+          y: controller.body.velocity.y + vmod.y,
+        },
+      },
+    };
+  }
+
+  // 4. POST-CONTROLLER CONTACT PASS: the mechanics runtime owns spring and
+  //    teleporter contact. It checks the RESOLVED post-move body in
+  //    declaration order, applies any relocation, and then skips any further
+  //    relocation in the same step (a second portal cannot chain off the
+  //    first). Cooldowns and contact arming live in the instances, so a spring
+  //    fires once per contact and a teleporter pair cannot bounce the player
+  //    back while its cooldown runs or until the body leaves the arrival tile.
+  //    A merged bodyOverride then replaces the resolved body.
+  let body = applyMechanicContacts(state.mechanicsRuntime, controller.body);
+  if (overrides.bodyOverride !== undefined) {
+    body = overrides.bodyOverride;
   }
   controller = { ...controller, body };
 

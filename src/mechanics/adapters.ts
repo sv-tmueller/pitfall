@@ -83,9 +83,9 @@ function reqPointArray(
 
 import {
   applySpringImpulse,
-  checkSpringHit,
   createSpring,
   resetSpring,
+  springOverlaps,
   stepSpring,
   triggerSpring,
   type Spring,
@@ -98,38 +98,37 @@ export function createSpringMechanic(entry: MechanicEntry): MechanicInstance {
   const impulseY = reqNumber(entry.params, 'impulseY');
 
   let spring: Spring = createSpring(x, y, impulseX, impulseY);
+  // Contact-state arming: a spring fires on the rising edge of overlap. It is
+  // disarmed once it fires and only re-arms after the body has left the volume,
+  // so sustained overlap never re-triggers even after the cooldown expires.
+  let armed = true;
 
   return {
     id: entry.id,
     type: entry.type,
+    contactCategory: 'impulse',
     step(_ctx) {
       spring = stepSpring(spring, 1);
       return {};
     },
-    // Contact detection happens in the post-controller pass via checkSpringContact.
+    // Post-resolve contact: fires against the resolved body once per contact,
+    // combining rising-edge arming with the instance's persistent cooldown.
+    contact(body: Body) {
+      if (!springOverlaps(spring, body)) {
+        armed = true;
+        return null;
+      }
+      if (!armed) return null;
+      if (spring.currentCooldown > 0) return null;
+      spring = triggerSpring(spring);
+      armed = false;
+      return { body: applySpringImpulse(spring, body), halts: false };
+    },
     reset() {
       spring = resetSpring(spring);
+      armed = true;
     },
   };
-}
-
-/** Post-controller spring contact check. Returns body override if hit. */
-export function checkSpringContact(
-  entry: MechanicEntry,
-  body: Body,
-): { body: Body; springId: string } | null {
-  const x = reqNumber(entry.params, 'x');
-  const y = reqNumber(entry.params, 'y');
-  const impulseX = optNumber(entry.params, 'impulseX') ?? 0;
-  const impulseY = reqNumber(entry.params, 'impulseY');
-  let spring: Spring = createSpring(x, y, impulseX, impulseY);
-
-  if (checkSpringHit(spring, body)) {
-    spring = triggerSpring(spring);
-    const newBody = applySpringImpulse(spring, body);
-    return { body: newBody, springId: entry.id };
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,10 +137,10 @@ export function checkSpringContact(
 
 import {
   applyTeleport,
-  checkTeleport,
   createTeleporter,
   resetTeleporter,
   stepTeleporter,
+  teleporterOverlaps,
   triggerCooldown,
   type Teleporter,
 } from './teleporter';
@@ -155,40 +154,56 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
   const preserveMomentum = optBoolean(entry.params, 'preserveMomentum', false);
 
   let teleporter: Teleporter = createTeleporter(x, y, destX, destY, oneWay, preserveMomentum);
+  let twin: MechanicInstance | undefined;
+  // Contact-state arming: a portal relocates on the rising edge of overlap and
+  // re-arms only after the body has LEFT the trigger volume. Without this, the
+  // cooldown alone would re-fire the moment it expired while the body still sat
+  // on the arrival tile, ping-ponging a walking player between the pair.
+  let armed = true;
 
   return {
     id: entry.id,
     type: entry.type,
+    contactCategory: 'relocation',
+    // Two-way teleporters publish a pairing token; the runtime links mirrored
+    // pairs by geometry. One-way teleporters have no twin (self cooldown only).
+    ...(oneWay
+      ? {}
+      : { pairKey: { origin: `${x},${y}`, dest: `${destX},${destY}` } }),
     step(_ctx) {
       teleporter = stepTeleporter(teleporter, 1);
       return {};
     },
+    // Post-resolve contact: relocates against the resolved body and halts
+    // further relocations this step. Firing cools this teleporter and disarms
+    // its paired twin, so the arrival tile cannot bounce the player straight
+    // back and stays disarmed until the player leaves the tile.
+    contact(body: Body) {
+      if (!teleporterOverlaps(teleporter, body)) {
+        armed = true;
+        return null;
+      }
+      if (!armed) return null;
+      if (teleporter.currentCooldown > 0) return null;
+      teleporter = triggerCooldown(teleporter);
+      armed = false;
+      twin?.cool?.(teleporter.cooldown);
+      return { body: applyTeleport(teleporter, body), halts: true };
+    },
+    linkTwin(t: MechanicInstance) {
+      twin = t;
+    },
+    cool(steps: number) {
+      teleporter = { ...teleporter, currentCooldown: steps };
+      // A twin teleported INTO this portal: hold it disarmed until the body
+      // leaves the arrival tile, not merely until the cooldown decays.
+      armed = false;
+    },
     reset() {
       teleporter = resetTeleporter(teleporter);
+      armed = true;
     },
   };
-}
-
-/** Post-controller teleporter contact check. Returns teleported body if hit. */
-export function checkTeleporterContact(
-  entry: MechanicEntry,
-  body: Body,
-): { body: Body; teleporterId: string } | null {
-  const x = reqNumber(entry.params, 'x');
-  const y = reqNumber(entry.params, 'y');
-  const destX = reqNumber(entry.params, 'destX');
-  const destY = reqNumber(entry.params, 'destY');
-  const oneWay = optBoolean(entry.params, 'oneWay', false);
-  const preserveMomentum = optBoolean(entry.params, 'preserveMomentum', false);
-
-  let teleporter: Teleporter = createTeleporter(x, y, destX, destY, oneWay, preserveMomentum);
-
-  if (checkTeleport(teleporter, body)) {
-    teleporter = triggerCooldown(teleporter);
-    const newBody = applyTeleport(teleporter, body);
-    return { body: newBody, teleporterId: entry.id };
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
