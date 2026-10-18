@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TILE_SIZE } from '../engine/physics';
+import type { Body } from '../engine/physics';
 import type { LevelData, Tile as LvlTile } from '../levels/types';
 import {
   createScene,
@@ -899,13 +900,72 @@ describe('scene - runtime-owned mechanics (issue #159)', () => {
     let reentriesToA = 0;
     let prevX = s.controller.body.x;
     for (let i = 0; i < 6000; i++) {
+      if (s.phase !== 'playing') break;
       s = stepScene(s, holding, DT);
       const x = s.controller.body.x;
       if (x >= 256) clearedB = true;
       if (x < 96 && prevX >= 96) reentriesToA++;
       prevX = x;
     }
-    expect(clearedB).toBe(true);
+    // The teleporter must never drag the player back into tp-glitch-a's box.
     expect(reentriesToA).toBe(0);
+    // Progress, not a stalled ping-pong: either the player walks clear of
+    // tp-glitch-b's box, or level 43's fake-exit door (now correctly honoured
+    // by the scene's exit check, issue #160) slides into its path and the
+    // level completes. Both outcomes mean the teleporter stopped the player
+    // from looping, which is the regression this test guards.
+    expect(clearedB || s.phase === 'entering').toBe(true);
+  });
+});
+
+// ===========================================================================
+// Fake exit: only the moved door wins (issue #160)
+// ===========================================================================
+
+describe('scene - fake exit moves the winning tile', () => {
+  // Ten-wide, six-row open shaft with a fake-exit door at col 7 that flees
+  // to col 3 once the player is within 400 px (always true at spawn).
+  function fakeExitShaft(): Record<string, unknown> {
+    return makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 7, row: 4 },
+      traps: [
+        {
+          id: 'runaway-exit',
+          type: 'fake-exit',
+          trigger: 'on-approach',
+          params: { escapeCol: 3, escapeRow: 4, triggerDist: 400, speed: 4 },
+        },
+      ],
+    });
+  }
+
+  function bodyAt(x: number, y: number): Body {
+    return { x, y, width: 16, height: 16, velocity: { x: 0, y: 0 }, grounded: true };
+  }
+
+  it('the vacated original exit tile no longer wins once the door slides away', () => {
+    let s = createScene([fakeExitShaft()]);
+    for (let i = 0; i < 40; i++) s = stepScene(s, idle(), DT);
+    expect(s.phase).toBe('playing');
+    expect(s.runtime.world.exitPos).toEqual({ col: 3, row: 4 });
+
+    // Park the player on the original (col 7) exit tile: the door is gone.
+    const onOldTile: SceneState = {
+      ...s,
+      controller: { ...s.controller, body: bodyAt(7 * TILE_SIZE, 4 * TILE_SIZE) },
+    };
+    expect(stepScene(onOldTile, idle(), DT).phase).toBe('playing');
+  });
+
+  it('the moved door tile wins', () => {
+    let s = createScene([fakeExitShaft()]);
+    for (let i = 0; i < 40; i++) s = stepScene(s, idle(), DT);
+
+    const onDoor: SceneState = {
+      ...s,
+      controller: { ...s.controller, body: bodyAt(3 * TILE_SIZE, 4 * TILE_SIZE) },
+    };
+    expect(stepScene(onDoor, idle(), DT).phase).toBe('entering');
   });
 });
