@@ -106,30 +106,17 @@ export function createSpringMechanic(entry: MechanicEntry): MechanicInstance {
       spring = stepSpring(spring, 1);
       return {};
     },
-    // Contact detection happens in the post-controller pass via checkSpringContact.
+    // Post-resolve contact: fires against the resolved body using the
+    // instance's persistent cooldown, so one contact yields one launch.
+    contact(body: Body) {
+      if (!checkSpringHit(spring, body)) return null;
+      spring = triggerSpring(spring);
+      return { body: applySpringImpulse(spring, body), halts: false };
+    },
     reset() {
       spring = resetSpring(spring);
     },
   };
-}
-
-/** Post-controller spring contact check. Returns body override if hit. */
-export function checkSpringContact(
-  entry: MechanicEntry,
-  body: Body,
-): { body: Body; springId: string } | null {
-  const x = reqNumber(entry.params, 'x');
-  const y = reqNumber(entry.params, 'y');
-  const impulseX = optNumber(entry.params, 'impulseX') ?? 0;
-  const impulseY = reqNumber(entry.params, 'impulseY');
-  let spring: Spring = createSpring(x, y, impulseX, impulseY);
-
-  if (checkSpringHit(spring, body)) {
-    spring = triggerSpring(spring);
-    const newBody = applySpringImpulse(spring, body);
-    return { body: newBody, springId: entry.id };
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,40 +142,39 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
   const preserveMomentum = optBoolean(entry.params, 'preserveMomentum', false);
 
   let teleporter: Teleporter = createTeleporter(x, y, destX, destY, oneWay, preserveMomentum);
+  let twin: MechanicInstance | undefined;
 
   return {
     id: entry.id,
     type: entry.type,
+    // Two-way teleporters publish a pairing token; the runtime links mirrored
+    // pairs by geometry. One-way teleporters have no twin (self cooldown only).
+    ...(oneWay
+      ? {}
+      : { pairKey: { origin: `${x},${y}`, dest: `${destX},${destY}` } }),
     step(_ctx) {
       teleporter = stepTeleporter(teleporter, 1);
       return {};
+    },
+    // Post-resolve contact: relocates against the resolved body and halts the
+    // pass. Firing cools this teleporter and its paired twin, so the arrival
+    // tile cannot bounce the player straight back during the cooldown.
+    contact(body: Body) {
+      if (!checkTeleport(teleporter, body)) return null;
+      teleporter = triggerCooldown(teleporter);
+      twin?.cool?.(teleporter.cooldown);
+      return { body: applyTeleport(teleporter, body), halts: true };
+    },
+    linkTwin(t: MechanicInstance) {
+      twin = t;
+    },
+    cool(steps: number) {
+      teleporter = { ...teleporter, currentCooldown: steps };
     },
     reset() {
       teleporter = resetTeleporter(teleporter);
     },
   };
-}
-
-/** Post-controller teleporter contact check. Returns teleported body if hit. */
-export function checkTeleporterContact(
-  entry: MechanicEntry,
-  body: Body,
-): { body: Body; teleporterId: string } | null {
-  const x = reqNumber(entry.params, 'x');
-  const y = reqNumber(entry.params, 'y');
-  const destX = reqNumber(entry.params, 'destX');
-  const destY = reqNumber(entry.params, 'destY');
-  const oneWay = optBoolean(entry.params, 'oneWay', false);
-  const preserveMomentum = optBoolean(entry.params, 'preserveMomentum', false);
-
-  let teleporter: Teleporter = createTeleporter(x, y, destX, destY, oneWay, preserveMomentum);
-
-  if (checkTeleport(teleporter, body)) {
-    teleporter = triggerCooldown(teleporter);
-    const newBody = applyTeleport(teleporter, body);
-    return { body: newBody, teleporterId: entry.id };
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------

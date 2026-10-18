@@ -18,8 +18,6 @@ import {
   createRotatingArmMechanic,
   createBombMechanic,
   createTokenMechanic,
-  checkSpringContact,
-  checkTeleporterContact,
 } from './adapters';
 
 // ---------------------------------------------------------------------------
@@ -68,20 +66,41 @@ describe('spring adapter', () => {
     expect(result).toEqual({});
   });
 
-  it('checkSpringContact returns body override when player overlaps', () => {
-    const entry = makeEntry('spring', { x: 0, y: 0, impulseY: -400 });
-    const body = makeBody(0, 0);
-    const contact = checkSpringContact(entry, body);
+  it('contact returns a body override when the player overlaps', () => {
+    const mech = createSpringMechanic(makeEntry('spring', { x: 0, y: 0, impulseY: -400 }));
+    mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
+    const contact = mech.contact!(makeBody(0, 0));
     expect(contact).not.toBeNull();
     expect(contact!.body.velocity.y).toBe(-400);
-    expect(contact!.springId).toBe('test-spring');
+    expect(contact!.halts).toBe(false);
   });
 
-  it('checkSpringContact returns null when player does not overlap', () => {
-    const entry = makeEntry('spring', { x: 100, y: 100, impulseY: -400 });
-    const body = makeBody(0, 0);
-    const contact = checkSpringContact(entry, body);
-    expect(contact).toBeNull();
+  it('contact returns null when the player does not overlap', () => {
+    const mech = createSpringMechanic(makeEntry('spring', { x: 100, y: 100, impulseY: -400 }));
+    mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
+    expect(mech.contact!(makeBody(0, 0))).toBeNull();
+  });
+
+  it('fires once per contact then holds its cooldown across frames', () => {
+    const mech = createSpringMechanic(makeEntry('spring', { x: 0, y: 0, impulseY: -400 }));
+    const ctx = { body: makeBody(0, 0), actions: noActions(), step: 0 };
+    mech.step(ctx);
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
+    // Still overlapping on the following frames, but the cooldown blocks it.
+    for (let i = 0; i < 5; i++) {
+      mech.step(ctx);
+      expect(mech.contact!(makeBody(0, 0))).toBeNull();
+    }
+  });
+
+  it('re-fires once the cooldown elapses', () => {
+    const mech = createSpringMechanic(makeEntry('spring', { x: 0, y: 0, impulseY: -400 }));
+    const ctx = { body: makeBody(0, 0), actions: noActions(), step: 0 };
+    mech.step(ctx);
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
+    // Cooldown is 10 steps: the launch is available again afterwards.
+    for (let i = 0; i < 10; i++) mech.step(ctx);
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
   });
 
   it('reset restores initial state', () => {
@@ -105,32 +124,47 @@ describe('teleporter adapter', () => {
     expect(result).toEqual({});
   });
 
-  it('checkTeleporterContact relocates body when overlapping', () => {
-    const entry = makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 200 });
-    const body = makeBody(0, 0);
-    const contact = checkTeleporterContact(entry, body);
+  it('contact relocates the body when overlapping', () => {
+    const mech = createTeleporterMechanic(makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 200 }));
+    mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
+    const contact = mech.contact!(makeBody(0, 0));
     expect(contact).not.toBeNull();
     expect(contact!.body.x).toBe(100);
     expect(contact!.body.y).toBe(200);
     expect(contact!.body.velocity.x).toBe(0);
     expect(contact!.body.velocity.y).toBe(0);
+    expect(contact!.halts).toBe(true);
   });
 
-  it('checkTeleporterContact preserves momentum when configured', () => {
-    const entry = makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 200, preserveMomentum: true });
+  it('contact preserves momentum when configured', () => {
+    const mech = createTeleporterMechanic(
+      makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 200, preserveMomentum: true }),
+    );
+    mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
     const body = makeBody(0, 0);
     body.velocity = { x: 50, y: 30 };
-    const contact = checkTeleporterContact(entry, body);
+    const contact = mech.contact!(body);
     expect(contact).not.toBeNull();
     expect(contact!.body.velocity.x).toBe(50);
     expect(contact!.body.velocity.y).toBe(30);
   });
 
-  it('checkTeleporterContact returns null when not overlapping', () => {
-    const entry = makeEntry('teleporter', { x: 200, y: 200, destX: 100, destY: 200 });
-    const body = makeBody(0, 0);
-    const contact = checkTeleporterContact(entry, body);
-    expect(contact).toBeNull();
+  it('contact returns null when not overlapping', () => {
+    const mech = createTeleporterMechanic(makeEntry('teleporter', { x: 200, y: 200, destX: 100, destY: 200 }));
+    mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
+    expect(mech.contact!(makeBody(0, 0))).toBeNull();
+  });
+
+  it('holds its cooldown so the arrival tile cannot re-fire across frames', () => {
+    const mech = createTeleporterMechanic(makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 200 }));
+    const ctx = { body: makeBody(0, 0), actions: noActions(), step: 0 };
+    mech.step(ctx);
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
+    // Overlapping the same teleporter again next frame must not re-fire.
+    for (let i = 0; i < 5; i++) {
+      mech.step(ctx);
+      expect(mech.contact!(makeBody(0, 0))).toBeNull();
+    }
   });
 });
 

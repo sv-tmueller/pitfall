@@ -52,6 +52,60 @@ export interface MechanicStepResult {
 }
 
 // ---------------------------------------------------------------------------
+// Published overrides (merged by the runtime each step)
+// ---------------------------------------------------------------------------
+
+/**
+ * Additive velocity modification published by the runtime. `x` and `y` are
+ * summed across every mechanic that emitted a `velocityMod` this step, so two
+ * thrust sources stack. Zero means "no modification".
+ */
+export interface VelocityMod {
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
+ * Small, non-additive overrides merged from every mechanic step result and
+ * published on the runtime each step (cleared like the other buffers).
+ *
+ * Merge semantics:
+ *  - `bodyOverride`: last writer wins in declaration order.
+ *  - `velocityMod`: accumulated additively across mechanics.
+ *  - `actionsOverride`: last writer wins (typically only one input modifier).
+ */
+export interface PublishedOverrides {
+  readonly bodyOverride?: Body;
+  readonly velocityMod: VelocityMod;
+  readonly actionsOverride?: ControllerActions;
+}
+
+// ---------------------------------------------------------------------------
+// Contact hooks (post-resolve, runtime-owned)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a mechanic's post-resolve contact check. `halts` means the contact
+ * pass stops after applying this body (a relocation happened); springs leave
+ * it false so a later spring in declaration order may still fire.
+ */
+export interface MechanicContact {
+  readonly body: Body;
+  readonly halts: boolean;
+}
+
+/**
+ * Pairing token for relocation mechanics (teleporters). The runtime links an
+ * instance whose `dest` token equals another instance's `origin` token and
+ * whose own `origin` token equals that instance's `dest`, so a relocation can
+ * cool its twin. `origin`/`dest` are stable coordinate strings.
+ */
+export interface MechanicPairKey {
+  readonly origin: string;
+  readonly dest: string;
+}
+
+// ---------------------------------------------------------------------------
 // Cosmetic effects (stored for renderer, no physics impact)
 // ---------------------------------------------------------------------------
 
@@ -92,6 +146,23 @@ export interface MechanicInstance {
   readonly id: string;
   readonly type: string;
   step(ctx: MechanicContext): MechanicStepResult;
+  /**
+   * Optional post-resolve contact hook. The runtime calls it with the RESOLVED
+   * post-move body after the controller step, in declaration order. A returned
+   * body replaces the current one; the pass stops early when `halts` is true.
+   * Persistent cooldowns live in the instance, not in rebuilt params.
+   */
+  contact?(body: Body): MechanicContact | null;
+  /**
+   * Optional pairing token. The runtime links two instances whose origin/dest
+   * tokens mirror each other at construction (deterministic, declaration
+   * order). Pairing is a runtime concern; adapters just declare the geometry.
+   */
+  readonly pairKey?: MechanicPairKey;
+  /** Optional: receive the paired twin instance. Called once at construction. */
+  linkTwin?(twin: MechanicInstance): void;
+  /** Optional: apply an external cooldown (a paired twin relocated). */
+  cool?(steps: number): void;
   reset(): void;
 }
 
