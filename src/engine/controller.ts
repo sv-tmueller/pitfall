@@ -1,4 +1,4 @@
-import { moveAndCollide, type Body, type TileGrid } from './physics';
+import { moveAndCollide, type Body, type SolidRect, type TileGrid } from './physics';
 
 export const MAX_RUN = 120;
 export const ACCEL = 800;
@@ -44,6 +44,7 @@ export function stepController(
   actions: ControllerActions,
   grid: TileGrid,
   dt: number,
+  solids: readonly SolidRect[] = [],
 ): ControllerState {
   const body = state.body;
 
@@ -95,7 +96,7 @@ export function stepController(
 
   // Phase 7: integrate and resolve.
   const bodyToMove: Body = { ...body, velocity: { x: vx, y: vy } };
-  const result = moveAndCollide(bodyToMove, grid, dt);
+  const result = moveAndCollide(bodyToMove, grid, dt, solids);
 
   // Phase 8: coyote bookkeeping from the resolved grounded flag.
   coyoteSteps = result.body.grounded ? COYOTE_STEPS : Math.max(coyoteSteps - 1, 0);

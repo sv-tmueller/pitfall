@@ -356,4 +356,20 @@ describe('stepController - variable jump height', () => {
     // Same derivation as above: one step of gravity on the first impulse, not a re-fired impulse.
     expect(state.body.velocity.y).toBe(JUMP_VEL + 15);
   });
+
+  it('threads dynamic solids through to the move solver', () => {
+    // A floor row wide enough to keep the body within the solid's vertical
+    // span for the whole run; a bare 1-column floor lets the body fall off the
+    // edge and coast past the solid once it drops below the solid's bottom.
+    const grid = parseGrid(['...', '...', '###']);
+    // A solid column two tiles to the right of the spawn blocks the run.
+    const solid = { x: 32, y: 0, width: 16, height: 48 };
+    let state = createControllerState(makeBody({ x: 0, y: 0, grounded: true }));
+
+    for (let i = 0; i < 60; i++) {
+      state = stepController(state, actions({ right: true }), grid, DT, [solid]);
+    }
+
+    expect(state.body.x + state.body.width).toBeLessThanOrEqual(solid.x);
+  });
 });
