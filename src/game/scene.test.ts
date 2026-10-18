@@ -588,3 +588,150 @@ describe('scene - mechanics integration', () => {
     expect(s.mechanicsRuntime.publishedSolids[0]!.x).toBe(16);
   });
 });
+
+// ===========================================================================
+// Dynamic solids: colliding, crushing, and carrying (issue #158)
+// ===========================================================================
+
+/**
+ * Six-row open shaft: ceiling, four open rows, floor. Spawn and exit are
+ * tile positions; traps and mechanics are passed through verbatim so a test
+ * can drop in a crusher, a shifting wall, or a moving platform.
+ */
+function makeShaftLevel(opts: {
+  spawn: { col: number; row: number };
+  exit: { col: number; row: number };
+  cols?: number;
+  traps?: unknown[];
+  mechanics?: unknown[];
+}): Record<string, unknown> {
+  const cols = opts.cols ?? 10;
+  const rows = 6;
+  const tiles: string[] = ['1'.repeat(cols)];
+  for (let r = 1; r < rows - 1; r++) tiles.push('0'.repeat(cols));
+  tiles.push('1'.repeat(cols));
+
+  return {
+    name: 'shaft',
+    cols,
+    rows,
+    spawn: opts.spawn,
+    exit: opts.exit,
+    tiles,
+    traps: opts.traps ?? [],
+    mechanics: opts.mechanics ?? [],
+  };
+}
+
+describe('scene - dynamic solids (issue #158)', () => {
+  it('a crusher dropping onto the player kills (AC1)', () => {
+    // Player stands on the floor at row 4. The crusher hangs two tiles above
+    // the floor (row 1, two tiles tall) so its danger zone already wraps the
+    // player, firing on-enter. It then descends onto the standing player.
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      traps: [
+        {
+          id: 'ceiling-crusher',
+          type: 'crusher',
+          trigger: 'on-enter',
+          params: { col: 1, row: 1, width: 2, height: 2, dropDistance: 48, dropSpeed: 4 },
+        },
+      ],
+    });
+
+    let s = createScene([source]);
+    let died = false;
+    for (let i = 0; i < 40 && !died; i++) {
+      s = stepScene(s, idle(), DT);
+      if (s.phase === 'dying') died = true;
+    }
+
+    expect(died).toBe(true);
+    expect(s.deathsThisLevel).toBe(1);
+  });
+
+  it('a shifting wall slides in and blocks horizontal movement (AC2)', () => {
+    // The wall spawns at col 3 and slides right by 32 px (two tiles), parking
+    // its left face at x = 80. The player walks right from x = 16 and must be
+    // stopped with its right edge against that face (player x = 64).
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      traps: [
+        {
+          id: 'seal-wall',
+          type: 'shifting-wall',
+          trigger: 'on-timer',
+          params: {
+            col: 3,
+            row: 4,
+            direction: 'right',
+            distance: 32,
+            speed: 8,
+            delaySteps: 0,
+          },
+        },
+      ],
+    });
+
+    let s = createScene([source]);
+    for (let i = 0; i < 200; i++) {
+      s = stepScene(s, idle({ right: true }), DT);
+    }
+
+    expect(s.phase).toBe('playing');
+    // Blocked by the wall face: the player never crosses x = 64.
+    expect(s.controller.body.x).toBeLessThanOrEqual(65);
+    // But it did travel right toward the wall rather than stalling at spawn.
+    expect(s.controller.body.x).toBeGreaterThan(45);
+  });
+
+  it('a rider is carried through a turnaround without falling (AC3)', () => {
+    // Platform starts at x = 48 and ping-pongs over a 48 px band. The player
+    // spawns flush on its top (bottom edge at y = 48), one tile above the
+    // floor, so a carry failure shows up as a fall to y = 64.
+    const source = makeShaftLevel({
+      cols: 12,
+      spawn: { col: 4, row: 2 },
+      exit: { col: 11, row: 1 },
+      mechanics: [
+        {
+          id: 'ride',
+          type: 'moving-platform',
+          params: {
+            startX: 48,
+            startY: 48,
+            width: 32,
+            height: 16,
+            dx: 1,
+            dy: 0,
+            speed: 60,
+            distance: 48,
+          },
+        },
+      ],
+    });
+
+    let s = createScene([source]);
+    let sawTurnaround = false;
+
+    for (let i = 0; i < 200; i++) {
+      s = stepScene(s, idle(), DT);
+      const platform = s.mechanicsRuntime.publishedSolids[0]!;
+      const body = s.controller.body;
+
+      if (platform.velocityX < 0) sawTurnaround = true;
+
+      // Still resting on the platform top (y = 48), never dropped to the floor.
+      expect(Math.abs(body.y + body.height - 48)).toBeLessThanOrEqual(1);
+      // Still horizontally over the platform.
+      expect(body.x + body.width).toBeGreaterThan(platform.x);
+      expect(body.x).toBeLessThan(platform.x + platform.width);
+    }
+
+    expect(sawTurnaround).toBe(true);
+    expect(s.controller.body.grounded).toBe(true);
+  });
+});
