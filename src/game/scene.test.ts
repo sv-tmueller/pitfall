@@ -795,8 +795,8 @@ describe('scene - runtime-owned mechanics (issue #159)', () => {
   it('a spring penned under a ceiling fires once per contact, not every frame (AC)', () => {
     // Three rows: the player exactly fills the open row between ceiling and
     // floor, so it can never leave the spring's overlap box. The launch must
-    // therefore apply once, then hold its cooldown, rather than re-trigger on
-    // every overlapping frame.
+    // therefore apply exactly once across the whole sustained overlap, even
+    // long past the 10-step cooldown, because the body never breaks contact.
     const source = {
       name: 'spring-pen',
       cols: 6,
@@ -810,9 +810,9 @@ describe('scene - runtime-owned mechanics (issue #159)', () => {
 
     let s = createScene([source]);
     let launches = 0;
-    // The spring cooldown is 10 steps: within that window the pinned contact
-    // must launch exactly once even though the player never leaves the box.
-    for (let i = 0; i < 10; i++) {
+    // 40 frames spans several cooldown windows (cooldown is 10 steps): a single
+    // sustained contact must still yield exactly one launch.
+    for (let i = 0; i < 40; i++) {
       s = stepScene(s, idle(), DT);
       if (s.controller.body.velocity.y <= -400) launches++;
       // Penned: the body never rises off the spring or falls to the floor.
@@ -856,8 +856,56 @@ describe('scene - runtime-owned mechanics (issue #159)', () => {
       expect(s.controller.body.x).toBeGreaterThan(200);
     }
 
-    // Once the 10-step cooldown elapses the pair re-arms and can fire again.
-    s = stepScene(s, idle(), DT);
-    expect(s.controller.body.x).toBe(80);
+    // The 10-step cooldown elapses, but the player never left the arrival tile,
+    // so the portal stays disarmed: no involuntary bounce back to the origin.
+    // (Overlap-release arming is what keeps this stable indefinitely.)
+    for (let i = 0; i < 40; i++) {
+      s = stepScene(s, idle(), DT);
+      expect(s.controller.body.x).toBeGreaterThan(200);
+    }
+  });
+
+  it('a walking player escapes the level-43 teleporter pair instead of ping-ponging', () => {
+    // Regression for the soft-lock: posed on tp-glitch-a and holding right, the
+    // player used to bounce A->B->A every 10 frames forever, never clearing
+    // either portal's 16 px trigger box (x >= 96 at A, x >= 256 at B). With
+    // overlap-release arming the arrival portal stays disarmed until the player
+    // walks clear, then re-arms only after the box is empty.
+    const source = WORLD3_LEVELS['glitch'] as Record<string, unknown>;
+    const scene = createScene([source]);
+    let s: SceneState = {
+      ...scene,
+      controller: {
+        ...scene.controller,
+        body: {
+          ...scene.controller.body,
+          x: 80,
+          y: 144,
+          velocity: { x: 0, y: 0 },
+          grounded: false,
+        },
+      },
+    };
+    const holding = idle({ right: true });
+
+    // Frame 1: the origin portal fires and drops the player on tp-glitch-b.
+    s = stepScene(s, holding, DT);
+    expect(s.controller.body.x).toBe(240);
+
+    // Hold right for the tester's full 6000-frame horizon. The player must
+    // walk clear of tp-glitch-b's box (x 240..256, so x reaches 256) and must
+    // never be dragged involuntarily back into tp-glitch-a's box (x 80..96).
+    let clearedB = false;
+    let reentriesToA = 0;
+    let prevX = s.controller.body.x;
+    for (let i = 0; i < 6000; i++) {
+      s = stepScene(s, holding, DT);
+      const x = s.controller.body.x;
+      if (x >= 256) clearedB = true;
+      if (x < 96 && prevX >= 96) reentriesToA++;
+      prevX = x;
+    }
+    expect(clearedB).toBe(true);
+    expect(reentriesToA).toBe(0);
   });
 });

@@ -86,8 +86,10 @@ export interface PublishedOverrides {
 
 /**
  * Result of a mechanic's post-resolve contact check. `halts` means the contact
- * pass stops after applying this body (a relocation happened); springs leave
- * it false so a later spring in declaration order may still fire.
+ * pass stops applying further contacts of the SAME category this step (a
+ * relocation happened, so a second teleporter must not chain off it); springs
+ * leave it false. Halting is category-scoped, so a spring declared after a
+ * teleporter still fires on the relocated body.
  */
 export interface MechanicContact {
   readonly body: Body;
@@ -149,10 +151,18 @@ export interface MechanicInstance {
   /**
    * Optional post-resolve contact hook. The runtime calls it with the RESOLVED
    * post-move body after the controller step, in declaration order. A returned
-   * body replaces the current one; the pass stops early when `halts` is true.
-   * Persistent cooldowns live in the instance, not in rebuilt params.
+   * body replaces the current one; the pass then skips any remaining hook in
+   * the SAME `contactCategory` when `halts` is true. Persistent cooldowns and
+   * contact arming live in the instance, not in rebuilt params.
    */
   contact?(body: Body): MechanicContact | null;
+  /**
+   * Category the contact hook belongs to ('relocation' for teleporters,
+   * 'impulse' for springs). When a hook halts, only hooks sharing its category
+   * are skipped for the rest of the step, so a teleport does not suppress an
+   * unrelated spring. Uncategorized hooks share the empty category.
+   */
+  readonly contactCategory?: string;
   /**
    * Optional pairing token. The runtime links two instances whose origin/dest
    * tokens mirror each other at construction (deterministic, declaration

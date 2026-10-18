@@ -83,9 +83,9 @@ function reqPointArray(
 
 import {
   applySpringImpulse,
-  checkSpringHit,
   createSpring,
   resetSpring,
+  springOverlaps,
   stepSpring,
   triggerSpring,
   type Spring,
@@ -98,23 +98,35 @@ export function createSpringMechanic(entry: MechanicEntry): MechanicInstance {
   const impulseY = reqNumber(entry.params, 'impulseY');
 
   let spring: Spring = createSpring(x, y, impulseX, impulseY);
+  // Contact-state arming: a spring fires on the rising edge of overlap. It is
+  // disarmed once it fires and only re-arms after the body has left the volume,
+  // so sustained overlap never re-triggers even after the cooldown expires.
+  let armed = true;
 
   return {
     id: entry.id,
     type: entry.type,
+    contactCategory: 'impulse',
     step(_ctx) {
       spring = stepSpring(spring, 1);
       return {};
     },
-    // Post-resolve contact: fires against the resolved body using the
-    // instance's persistent cooldown, so one contact yields one launch.
+    // Post-resolve contact: fires against the resolved body once per contact,
+    // combining rising-edge arming with the instance's persistent cooldown.
     contact(body: Body) {
-      if (!checkSpringHit(spring, body)) return null;
+      if (!springOverlaps(spring, body)) {
+        armed = true;
+        return null;
+      }
+      if (!armed) return null;
+      if (spring.currentCooldown > 0) return null;
       spring = triggerSpring(spring);
+      armed = false;
       return { body: applySpringImpulse(spring, body), halts: false };
     },
     reset() {
       spring = resetSpring(spring);
+      armed = true;
     },
   };
 }
@@ -125,10 +137,10 @@ export function createSpringMechanic(entry: MechanicEntry): MechanicInstance {
 
 import {
   applyTeleport,
-  checkTeleport,
   createTeleporter,
   resetTeleporter,
   stepTeleporter,
+  teleporterOverlaps,
   triggerCooldown,
   type Teleporter,
 } from './teleporter';
@@ -143,10 +155,16 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
 
   let teleporter: Teleporter = createTeleporter(x, y, destX, destY, oneWay, preserveMomentum);
   let twin: MechanicInstance | undefined;
+  // Contact-state arming: a portal relocates on the rising edge of overlap and
+  // re-arms only after the body has LEFT the trigger volume. Without this, the
+  // cooldown alone would re-fire the moment it expired while the body still sat
+  // on the arrival tile, ping-ponging a walking player between the pair.
+  let armed = true;
 
   return {
     id: entry.id,
     type: entry.type,
+    contactCategory: 'relocation',
     // Two-way teleporters publish a pairing token; the runtime links mirrored
     // pairs by geometry. One-way teleporters have no twin (self cooldown only).
     ...(oneWay
@@ -156,12 +174,19 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
       teleporter = stepTeleporter(teleporter, 1);
       return {};
     },
-    // Post-resolve contact: relocates against the resolved body and halts the
-    // pass. Firing cools this teleporter and its paired twin, so the arrival
-    // tile cannot bounce the player straight back during the cooldown.
+    // Post-resolve contact: relocates against the resolved body and halts
+    // further relocations this step. Firing cools this teleporter and disarms
+    // its paired twin, so the arrival tile cannot bounce the player straight
+    // back and stays disarmed until the player leaves the tile.
     contact(body: Body) {
-      if (!checkTeleport(teleporter, body)) return null;
+      if (!teleporterOverlaps(teleporter, body)) {
+        armed = true;
+        return null;
+      }
+      if (!armed) return null;
+      if (teleporter.currentCooldown > 0) return null;
       teleporter = triggerCooldown(teleporter);
+      armed = false;
       twin?.cool?.(teleporter.cooldown);
       return { body: applyTeleport(teleporter, body), halts: true };
     },
@@ -170,9 +195,13 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
     },
     cool(steps: number) {
       teleporter = { ...teleporter, currentCooldown: steps };
+      // A twin teleported INTO this portal: hold it disarmed until the body
+      // leaves the arrival tile, not merely until the cooldown decays.
+      armed = false;
     },
     reset() {
       teleporter = resetTeleporter(teleporter);
+      armed = true;
     },
   };
 }

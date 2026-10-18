@@ -93,13 +93,30 @@ describe('spring adapter', () => {
     }
   });
 
-  it('re-fires once the cooldown elapses', () => {
+  it('does not re-fire on sustained overlap, even after the cooldown elapses', () => {
     const mech = createSpringMechanic(makeEntry('spring', { x: 0, y: 0, impulseY: -400 }));
     const ctx = { body: makeBody(0, 0), actions: noActions(), step: 0 };
     mech.step(ctx);
     expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
-    // Cooldown is 10 steps: the launch is available again afterwards.
-    for (let i = 0; i < 10; i++) mech.step(ctx);
+    // Parked in the volume for well over the 10-step cooldown: the trigger is
+    // armed only on the rising edge of contact, so it must never re-fire.
+    for (let i = 0; i < 40; i++) {
+      mech.step(ctx);
+      expect(mech.contact!(makeBody(0, 0))).toBeNull();
+    }
+  });
+
+  it('re-arms and fires again only after the body leaves the volume', () => {
+    const mech = createSpringMechanic(makeEntry('spring', { x: 0, y: 0, impulseY: -400 }));
+    const ctx = { body: makeBody(0, 0), actions: noActions(), step: 0 };
+    mech.step(ctx);
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
+    // Leave the volume for the whole cooldown window.
+    for (let i = 0; i < 10; i++) {
+      mech.step(ctx);
+      expect(mech.contact!(makeBody(500, 500))).toBeNull();
+    }
+    // Re-entering now fires again (fresh contact, cooldown expired).
     expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
   });
 
@@ -165,6 +182,23 @@ describe('teleporter adapter', () => {
       mech.step(ctx);
       expect(mech.contact!(makeBody(0, 0))).toBeNull();
     }
+  });
+
+  it('stays disarmed past the cooldown until the body leaves the volume', () => {
+    const mech = createTeleporterMechanic(makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 200 }));
+    const ctx = { body: makeBody(0, 0), actions: noActions(), step: 0 };
+    mech.step(ctx);
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
+    // The 10-step cooldown decays while the body stays inside the box: the
+    // portal must remain disarmed, or a walking player would ping-pong.
+    for (let i = 0; i < 12; i++) {
+      mech.step(ctx);
+      expect(mech.contact!(makeBody(0, 0))).toBeNull();
+    }
+    // Stepping clear re-arms it, allowing a later fresh entry to fire.
+    mech.step(ctx);
+    expect(mech.contact!(makeBody(500, 500))).toBeNull();
+    expect(mech.contact!(makeBody(0, 0))).not.toBeNull();
   });
 });
 

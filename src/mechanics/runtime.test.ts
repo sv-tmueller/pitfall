@@ -502,18 +502,21 @@ describe('applyMechanicContacts', () => {
     expect(body.velocity.y).toBe(-400);
   });
 
-  it('stops after the first teleport so a later spring never fires', () => {
+  it('skips a further teleporter but still fires a spring after the first relocation', () => {
     const level = makeLevel([
-      makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 0 }, 'tp'),
-      makeEntry('spring', { x: 0, y: 0, impulseY: -400 }, 'sp'),
+      makeEntry('teleporter', { x: 0, y: 0, destX: 100, destY: 0 }, 'tp-a'),
+      makeEntry('teleporter', { x: 100, y: 0, destX: 200, destY: 0 }, 'tp-b'),
+      makeEntry('spring', { x: 100, y: 0, impulseY: -400 }, 'sp'),
     ]);
     const rt = createMechanicsRuntime(level, makeBody());
     stepMechanics(rt, makeBody(0, 0), noActions(), 0);
 
     const body = applyMechanicContacts(rt, makeBody(0, 0));
+    // tp-a relocates the body to (100, 0). tp-b shares the 'relocation'
+    // category, so the halt skips it (no chaining). The spring is a different
+    // category and still fires on the relocated body.
     expect(body.x).toBe(100);
-    // Momentum is zeroed by the teleport, and the spring after it never ran.
-    expect(body.velocity.y).toBe(0);
+    expect(body.velocity.y).toBe(-400);
   });
 
   it('cools a paired twin so the arrival tile cannot bounce the player back', () => {

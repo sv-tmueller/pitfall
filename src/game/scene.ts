@@ -333,10 +333,12 @@ function stepPlaying(
 
   // 4. POST-CONTROLLER CONTACT PASS: the mechanics runtime owns spring and
   //    teleporter contact. It checks the RESOLVED post-move body in
-  //    declaration order, applies any relocation, and stops after the first
-  //    teleport. Cooldowns live in the instances, so a spring fires once per
-  //    contact and a teleporter pair cannot bounce the player back while its
-  //    cooldown runs. A merged bodyOverride then replaces the resolved body.
+  //    declaration order, applies any relocation, and then skips any further
+  //    relocation in the same step (a second portal cannot chain off the
+  //    first). Cooldowns and contact arming live in the instances, so a spring
+  //    fires once per contact and a teleporter pair cannot bounce the player
+  //    back while its cooldown runs or until the body leaves the arrival tile.
+  //    A merged bodyOverride then replaces the resolved body.
   let body = applyMechanicContacts(state.mechanicsRuntime, controller.body);
   if (overrides.bodyOverride !== undefined) {
     body = overrides.bodyOverride;

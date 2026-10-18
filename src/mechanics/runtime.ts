@@ -193,23 +193,29 @@ function buildOverrides(
 /**
  * Post-resolve contact pass owned by the runtime. Runs each mechanic's
  * optional `contact()` hook against the RESOLVED post-move body, in
- * declaration order (deterministic), returning the merged body. Applies every
- * hit but stops at the first contact flagged `halts` (a relocation), so a
- * spring declared after a teleporter cannot fire in the same step. Persistent
- * cooldowns live in the instances, so the pass is stateless here.
+ * declaration order (deterministic), returning the merged body. A hook flagged
+ * `halts` (a relocation) skips any REMAINING hook sharing its
+ * `contactCategory` for the rest of the step, so a second teleporter cannot
+ * chain off the first while an unrelated spring still fires on the relocated
+ * body. Persistent cooldowns and contact arming live in the instances, so the
+ * pass itself is stateless here.
  */
 export function applyMechanicContacts(
   runtime: MechanicsRuntime,
   body: Body,
 ): Body {
   let current = body;
+  // Categories whose halting hook has already run this step.
+  const haltedCategories = new Set<string>();
   for (const mech of runtime.mechanics) {
     const hook = mech.contact;
     if (hook === undefined) continue;
+    const category = mech.contactCategory ?? '';
+    if (haltedCategories.has(category)) continue;
     const contact = hook.call(mech, current);
     if (contact === null) continue;
     current = contact.body;
-    if (contact.halts) break;
+    if (contact.halts) haltedCategories.add(category);
   }
   return current;
 }
