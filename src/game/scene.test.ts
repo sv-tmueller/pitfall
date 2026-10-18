@@ -14,6 +14,7 @@ import {
   spawnToBody,
 } from './constants';
 import { createControllerState } from '../engine/controller';
+import { WORLD3_LEVELS } from '../levels/world3/index';
 
 const DT = 1 / 60;
 
@@ -733,5 +734,130 @@ describe('scene - dynamic solids (issue #158)', () => {
 
     expect(sawTurnaround).toBe(true);
     expect(s.controller.body.grounded).toBe(true);
+  });
+});
+
+describe('scene - runtime-owned mechanics (issue #159)', () => {
+  it('a jetpack lifts the player while jump is held (AC)', () => {
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      mechanics: [{ id: 'jp', type: 'jetpack', params: { maxFuel: 300, thrustPower: 600 } }],
+    });
+
+    let s = createScene([source]);
+    const startY = s.controller.body.y;
+    let minY = startY;
+    for (let i = 0; i < 40; i++) {
+      s = stepScene(s, idle({ jumpHeld: true }), DT);
+      minY = Math.min(minY, s.controller.body.y);
+    }
+
+    expect(s.phase).toBe('playing');
+    expect(minY).toBeLessThan(startY - 20);
+    expect(s.controller.body.y).toBeLessThan(startY);
+  });
+
+  it('without held jump the jetpack does not lift the player', () => {
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      mechanics: [{ id: 'jp', type: 'jetpack', params: { maxFuel: 300, thrustPower: 600 } }],
+    });
+
+    let s = createScene([source]);
+    const startY = s.controller.body.y;
+    let minY = startY;
+    for (let i = 0; i < 40; i++) {
+      s = stepScene(s, idle(), DT);
+      minY = Math.min(minY, s.controller.body.y);
+    }
+
+    expect(minY).toBeGreaterThanOrEqual(startY - 1);
+  });
+
+  it('control inversion makes left input move the player right (AC)', () => {
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      mechanics: [{ id: 'ci', type: 'control-inversion', params: { duration: -1 } }],
+    });
+
+    let s = createScene([source]);
+    const startX = s.controller.body.x;
+    for (let i = 0; i < 30; i++) {
+      s = stepScene(s, idle({ left: true }), DT);
+    }
+
+    expect(s.controller.body.x).toBeGreaterThan(startX + 20);
+  });
+
+  it('a spring penned under a ceiling fires once per contact, not every frame (AC)', () => {
+    // Three rows: the player exactly fills the open row between ceiling and
+    // floor, so it can never leave the spring's overlap box. The launch must
+    // therefore apply once, then hold its cooldown, rather than re-trigger on
+    // every overlapping frame.
+    const source = {
+      name: 'spring-pen',
+      cols: 6,
+      rows: 3,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 5, row: 1 },
+      tiles: ['111111', '000000', '111111'],
+      traps: [],
+      mechanics: [{ id: 'sp', type: 'spring', params: { x: 16, y: 16, impulseY: -500 } }],
+    };
+
+    let s = createScene([source]);
+    let launches = 0;
+    // The spring cooldown is 10 steps: within that window the pinned contact
+    // must launch exactly once even though the player never leaves the box.
+    for (let i = 0; i < 10; i++) {
+      s = stepScene(s, idle(), DT);
+      if (s.controller.body.velocity.y <= -400) launches++;
+      // Penned: the body never rises off the spring or falls to the floor.
+      expect(s.controller.body.y).toBeCloseTo(16, 5);
+    }
+
+    expect(launches).toBe(1);
+  });
+
+  it('teleporter arrives and stays on the real level-43 pair (AC)', () => {
+    // Level 43's tp-glitch-a sits at (80, 144) and relocates the player to
+    // (240, 80), which overlaps tp-glitch-b. Before the twin cooldown the pair
+    // ping-ponged: every frame bounced the player straight back.
+    const source = WORLD3_LEVELS['glitch'] as Record<string, unknown>;
+    const scene = createScene([source]);
+
+    let s: SceneState = {
+      ...scene,
+      controller: {
+        ...scene.controller,
+        body: {
+          ...scene.controller.body,
+          x: 80,
+          y: 144,
+          velocity: { x: 0, y: 0 },
+          grounded: false,
+        },
+      },
+    };
+
+    // Frame 1: contact fires and the body lands on the paired arrival tile.
+    s = stepScene(s, idle(), DT);
+    expect(s.phase).toBe('playing');
+    expect(s.controller.body.x).toBe(240);
+    expect(s.controller.body.y).toBe(80);
+
+    // Following frames: the arrival tile is still overlapping, yet the twin
+    // cooldown must hold the player there instead of bouncing it back.
+    for (let i = 0; i < 9; i++) {
+      s = stepScene(s, idle(), DT);
+      expect(s.controller.body.x).toBeGreaterThan(200);
+    }
+
+    // Once the 10-step cooldown elapses the pair re-arms and can fire again.
+    s = stepScene(s, idle(), DT);
+    expect(s.controller.body.x).toBe(80);
   });
 });
