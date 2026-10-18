@@ -19,10 +19,35 @@
         position: absolute;
         image-rendering: pixelated;
       }
+
+      #boot-error {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        max-width: 32rem;
+        padding: 1rem 1.25rem;
+        box-sizing: border-box;
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e6e6f0;
+        background: #12121c;
+        border: 1px solid #ff2e3c;
+        text-align: center;
+      }
+
+      #boot-error[hidden] {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <canvas id="game-canvas"></canvas>
+    <div id="boot-error" hidden></div>
+    <noscript>
+      <div id="boot-error-noscript">
+        Pitfall needs JavaScript enabled to run.
+      </div>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
