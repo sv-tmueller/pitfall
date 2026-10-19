@@ -209,34 +209,40 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
 // ---------------------------------------------------------------------------
 // Gravity zone adapter
 // ---------------------------------------------------------------------------
+//
+// A gravity zone is a static rectangle: the player's gravity is inverted
+// while their AABB overlaps it and normal otherwise. The adapter parses the
+// zone from params (pixel x/y top-left plus width/height, the same dialect the
+// validator's extractGravityZone reads) and publishes `gravityDirection` every
+// step (last writer wins in the runtime). It holds no per-step state beyond
+// the parsed rectangle.
 
-import {
-  createGravity,
-  invertGravity,
-  stepGravity,
-  type GravityState,
-} from './gravity';
+import { aabbOverlap, type AABB } from '../engine/physics';
+
+function parseZoneRect(entry: MechanicEntry): AABB | null {
+  const x = optNumber(entry.params, 'x');
+  const y = optNumber(entry.params, 'y');
+  const width = optNumber(entry.params, 'width');
+  const height = optNumber(entry.params, 'height');
+  if (x === undefined || y === undefined || width === undefined || height === undefined) {
+    return null;
+  }
+  return { x, y, width, height };
+}
 
 export function createGravityZoneMechanic(entry: MechanicEntry): MechanicInstance {
-  let gravState: GravityState = createGravity();
-  let initialized = false;
+  const zone = parseZoneRect(entry);
 
   return {
     id: entry.id,
     type: entry.type,
     step(ctx) {
-      if (!initialized) {
-        // Activate gravity inversion on first step (zone is always-on)
-        gravState = invertGravity(gravState);
-        initialized = true;
-      }
-      gravState = stepGravity(gravState, 1);
-      void ctx;
-      return {};
+      // No parseable rectangle: the zone is inert (never inverts).
+      const inside = zone !== null && aabbOverlap(ctx.body, zone);
+      return { gravityDirection: inside ? -1 : 1 };
     },
     reset() {
-      gravState = createGravity();
-      initialized = false;
+      // Stateless: nothing to restore.
     },
   };
 }

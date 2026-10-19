@@ -18,7 +18,13 @@ import { Tile } from '../levels/types';
  */
 function gridFrom(
   rowsOfDigits: string[],
-): { cols: number; rows: number; tiles: Tile[]; extraStandable: Set<string> } {
+): {
+  cols: number;
+  rows: number;
+  tiles: Tile[];
+  extraStandable: Set<string>;
+  gravityZones: Array<{ colMin: number; rowMin: number; colMax: number; rowMax: number }>;
+} {
   const rows = rowsOfDigits.length;
   const cols = rowsOfDigits[0]?.length ?? 0;
   const tiles: Tile[] = [];
@@ -27,7 +33,7 @@ function gridFrom(
       tiles.push(Number(ch) as Tile);
     }
   }
-  return { cols, rows, tiles, extraStandable: new Set<string>() };
+  return { cols, rows, tiles, extraStandable: new Set<string>(), gravityZones: [] };
 }
 
 // ---------------------------------------------------------------------------

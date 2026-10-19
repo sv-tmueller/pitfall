@@ -39,8 +39,6 @@ const ALLOWLIST: Readonly<Record<string, string>> = {
     'jetpack mechanic is not modelled; the BFS cannot certify the route without it',
   'mechanism':
     'shifting-wall trap rearranges geometry at runtime; the static sweep sees the wall closed and cannot certify the level',
-  gravitas:
-    'gravity inversion not implemented in engine (issue #174); validator no longer models it, so the normal-gravity BFS cannot certify the route',
 };
 
 /** The 45 shipped levels in sequence order. */
@@ -184,25 +182,30 @@ describe('structured verdict taxonomy pins (#161)', () => {
     expect(result.unmodeled).toContain('shifting-wall');
   });
 
-  it('gravitas withholds the verdict as not-modelled due to the unimplemented gravity zone', () => {
-    // Issue #174: gravity inversion is an engine no-op, so the validator
-    // models normal gravity only. The normal-gravity BFS cannot solve
-    // w2/gravitas (the exit hangs in the air beyond the jump apex), so
-    // the verdict must be WITHHELD with the declared gravity-zone
-    // mechanic named, never a false 'solvable' certificate and never a
-    // definitive 'unsolvable'.
+  it('gravitas certifies solvable now that gravity inversion is modelled (#174)', () => {
+    // Issue #174 restored the inversion model: the controller owns the
+    // gravity sign and the validator mirrors standability and the jump/drop
+    // envelope inside gravity zones, so w2/gravitas is certified directly.
+    // 'gravity-zone' is no longer in TRAVERSAL_UNMODELED_TYPES, the verdict
+    // is a real 'solvable' (not a withheld 'not-modelled'), and the
+    // allowlist entry was evicted by the gate's anti-stale contrapositive.
     const result = validateSolvability(loadLevel(WORLD2_LEVELS.gravitas));
-    expect(result.reachable).toBe(false);
-    expect(result.status).toBe('not-modelled');
-    expect(result.unmodeled).toContain('gravity-zone');
+    expect(result.reachable).toBe(true);
+    expect(result.status).toBe('solvable');
+    expect(result.unmodeled).toEqual([]);
   });
 
-  it('ceiling-walk stays certified solvable in the normal-gravity model', () => {
-    // The OTHER gravity-zone level must remain green: it is completable
-    // in normal gravity (verified by the hopBot simulation at step 198).
-    // Its exit hangs in the air, so certification relies on the
-    // engine-faithful exit rule (completion = AABB overlap with the exit
-    // cell), reached from the standable one-way ladder below it.
+  it('ceiling-walk certifies solvable via gravity inversion (#174)', () => {
+    // The model is zone-aware now: ceiling-walk owns a gravity-zone, so the
+    // validator mirrors standability and the jump/drop envelope inside it
+    // and the level completes VIA inversion (the ceiling becomes the
+    // floor). Killing the inverted region detection does NOT stall this
+    // level's flood-fill (other cells remain reachable in normal gravity),
+    // so this pin asserts the verdict, not the mechanism; the inversion
+    // model's load-bearing nature is proven by the gravitas and
+    // reachability-suite pins, which DO trip when inversion dies. The exit
+    // hangs in the air, so certification also relies on the engine-faithful
+    // exit rule (completion = AABB overlap with the exit cell).
     const result = validateSolvability(loadLevel(WORLD2_LEVELS['ceiling-walk']));
     expect(result.reachable).toBe(true);
     expect(result.status).toBe('solvable');

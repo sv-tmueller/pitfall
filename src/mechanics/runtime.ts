@@ -14,10 +14,11 @@
 //   - bodyOverride: last writer wins (teleporter overrides spring).
 //   - velocityMod: accumulated additively across mechanics.
 //   - actionsOverride: last writer wins (typically only one input modifier).
+//   - gravityDirection: last writer wins (gravity zones in declaration order).
 //   - dynamicSolids / hazardsToAdd: concatenated into the published arrays.
 //   - cosmeticState: aggregated into cosmeticEffects for the renderer.
 
-import type { Body } from '../engine/physics';
+import type { Body, GravityDirection } from '../engine/physics';
 import type { ControllerActions } from '../engine/controller';
 import type { HazardRect } from '../engine/levelAdapter';
 import type { LevelData } from '../levels/types';
@@ -133,6 +134,7 @@ export function stepMechanics(
   // Override merge accumulators (see merge semantics above).
   let bodyOverride: Body | undefined;
   let actionsOverride: ControllerActions | undefined;
+  let gravityDirection: GravityDirection | undefined;
   const velocityMod: { x: number; y: number } = { x: 0, y: 0 };
 
   for (const mech of runtime.mechanics) {
@@ -155,6 +157,9 @@ export function stepMechanics(
     if (result.actionsOverride !== undefined) {
       actionsOverride = result.actionsOverride;
     }
+    if (result.gravityDirection !== undefined) {
+      gravityDirection = result.gravityDirection;
+    }
     if (result.velocityMod !== undefined) {
       velocityMod.x += result.velocityMod.x ?? 0;
       velocityMod.y += result.velocityMod.y ?? 0;
@@ -172,7 +177,7 @@ export function stepMechanics(
   }
 
   runtime.cosmeticEffects = { cameraTrolls, fakeUiStates };
-  runtime.publishedOverrides = buildOverrides(bodyOverride, actionsOverride, velocityMod);
+  runtime.publishedOverrides = buildOverrides(bodyOverride, actionsOverride, velocityMod, gravityDirection);
 
   return runtime;
 }
@@ -181,12 +186,14 @@ function buildOverrides(
   bodyOverride: Body | undefined,
   actionsOverride: ControllerActions | undefined,
   velocityMod: { x: number; y: number },
+  gravityDirection: GravityDirection | undefined,
 ): PublishedOverrides {
   const mod: VelocityMod = { x: velocityMod.x, y: velocityMod.y };
   return {
     velocityMod: mod,
     ...(bodyOverride !== undefined ? { bodyOverride } : {}),
     ...(actionsOverride !== undefined ? { actionsOverride } : {}),
+    ...(gravityDirection !== undefined ? { gravityDirection } : {}),
   };
 }
 

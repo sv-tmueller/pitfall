@@ -1,4 +1,12 @@
-import { moveAndCollide, type Body, type SolidRect, type TileGrid } from './physics';
+import {
+  moveAndCollide,
+  type Body,
+  type GravityDirection,
+  type SolidRect,
+  type TileGrid,
+} from './physics';
+
+export type { GravityDirection };
 
 export const MAX_RUN = 120;
 export const ACCEL = 800;
@@ -45,6 +53,7 @@ export function stepController(
   grid: TileGrid,
   dt: number,
   solids: readonly SolidRect[] = [],
+  gravityDir: GravityDirection = 1,
 ): ControllerState {
   const body = state.body;
 
@@ -70,33 +79,40 @@ export function stepController(
   }
 
   // Phase 4: gravity before the jump impulse, so JUMP_VEL is the literal
-  // takeoff velocity rather than JUMP_VEL + one step of gravity.
-  let vy = Math.min(body.velocity.y + GRAVITY * dt, TERMINAL_VEL);
+  // takeoff velocity rather than JUMP_VEL + one step of gravity. `gravityDir`
+  // signs the acceleration: -1 pulls toward -y (inverted gravity) and caps
+  // the fall at -TERMINAL_VEL, mirroring the normal clamp.
+  let vy = gravityDir === 1
+    ? Math.min(body.velocity.y + GRAVITY * dt, TERMINAL_VEL)
+    : Math.max(body.velocity.y + GRAVITY * dt * gravityDir, -TERMINAL_VEL);
 
   // Phase 5: jump. Coyote is written only at the end of the step (phase 8)
   // from the previous step's grounded result, hence the > 0 (not >= 0)
   // eligibility check: it is read before this step's own resolve exists.
+  // The jump impulse points AGAINST gravity, so a negative JUMP_VEL becomes
+  // a positive (downward) impulse when inverted.
   let jumpCutArmed = state.jumpCutArmed;
   let coyoteSteps = state.coyoteSteps;
   if (jumpBufferSteps >= 0 && coyoteSteps > 0) {
-    vy = JUMP_VEL;
+    vy = JUMP_VEL * gravityDir;
     jumpBufferSteps = -1;
     coyoteSteps = 0;
     jumpCutArmed = true;
   }
 
   // Phase 6: release cut, at most once per jump, never applied to a fall.
-  if (jumpCutArmed && !actions.jumpHeld && vy < 0) {
+  // "Rising" means travelling against gravity: vy * gravityDir < 0.
+  if (jumpCutArmed && !actions.jumpHeld && vy * gravityDir < 0) {
     vy *= RELEASE_CUT;
     jumpCutArmed = false;
   }
-  if (vy >= 0) {
+  if (vy * gravityDir >= 0) {
     jumpCutArmed = false;
   }
 
   // Phase 7: integrate and resolve.
   const bodyToMove: Body = { ...body, velocity: { x: vx, y: vy } };
-  const result = moveAndCollide(bodyToMove, grid, dt, solids);
+  const result = moveAndCollide(bodyToMove, grid, dt, solids, gravityDir);
 
   // Phase 8: coyote bookkeeping from the resolved grounded flag.
   coyoteSteps = result.body.grounded ? COYOTE_STEPS : Math.max(coyoteSteps - 1, 0);

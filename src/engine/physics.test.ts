@@ -346,3 +346,49 @@ describe('moveAndCollide - rising-platform tunneling (issue #168)', () => {
     expect(result.body.y).toBeCloseTo(30 + 240 * DT);
   });
 });
+
+describe('moveAndCollide - inverted gravity dynamic solids', () => {
+  // An empty tile grid so only the dynamic solids can affect the result.
+  const emptyGrid = parseGrid(['...', '...', '...', '...', '...', '...']);
+
+  it('lands on the bottom face of a solid under inverted gravity, setting grounded', () => {
+    // Inverted gravity lands the body on surfaces ABOVE, so the mirror of the
+    // normal top-face landing is the solid's bottom face.
+    const platform: SolidRect = { x: 0, y: 32, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 50, velocity: { x: 0, y: -240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform], -1);
+
+    expect(result.body.y).toBe(48);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.body.grounded).toBe(true);
+    expect(result.hitCeiling).toBe(false);
+  });
+
+  it('bumps the foot on the top face of a solid under inverted gravity, zeroing vy', () => {
+    // Moving away from the inverted ground (vy toward +y), the body's foot
+    // meets the solid's top face: the mirror of the normal head bump.
+    const platform: SolidRect = { x: 0, y: 64, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 46, velocity: { x: 0, y: 240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform], -1);
+
+    expect(result.body.y).toBe(48);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.body.grounded).toBe(false);
+    // The solver reports the inverted foot bump through hitCeiling, mirroring
+    // the normal head-bump flag (no consumer distinguishes the two today).
+    expect(result.hitCeiling).toBe(true);
+  });
+
+  it('blocks horizontal movement against a solid under inverted gravity, zeroing vx', () => {
+    const wall: SolidRect = { x: 48, y: 16, width: 16, height: 16 };
+    const body = makeBody({ x: 32, y: 16, velocity: { x: 240, y: 0 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [wall], -1);
+
+    expect(result.body.x).toBe(32);
+    expect(result.body.velocity.x).toBe(0);
+    expect(result.hitWall).toBe(true);
+  });
+});

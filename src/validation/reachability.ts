@@ -24,12 +24,13 @@
 //     tiles. Bidirectional pairs add reciprocal edges.
 //   - Moving platforms make both endpoint positions standable in the BFS grid.
 //
-// Gravity zones are NOT modelled (issue #174): the shipped engine never
-// applies inversion (stepControllerWithGravity has no consumer; the
-// gravity-zone adapter publishes {}), so the validator models normal
-// gravity only. A level declaring a gravity-zone mechanic that the
-// normal-gravity BFS cannot solve lands 'not-modelled' with
-// 'gravity-zone' in `unmodeled`, never a false certificate.
+// Gravity zones ARE modelled (issue #174 restores the #129 model; #173 had
+// stripped it while the engine treated inversion as a no-op): a gravity-zone
+// mechanic inverts the gravity sign inside its rectangle. Inside a zone the
+// standable surface is ABOVE (with a world-ceiling guard), the jump/drop
+// envelope is mirrored (drop dr signs), and every swept edge flies the
+// mirrored parabola. The BFS is therefore sound under inversion again and
+// gravity-zone leaves `unmodeled` (TRAVERSAL_UNMODELED_TYPES).
 
 import { levelToGrid } from '../engine/levelAdapter';
 import type { JsonValue, LevelData, MechanicEntry } from '../levels/types';
@@ -60,9 +61,10 @@ export interface SolvabilityResult {
  * absent: they alter survival, not geometry, and never buy a
  * 'not-modelled' excuse.
  *
- * 'gravity-zone' is listed (issue #174): gravity inversion is an engine
- * no-op, so the validator models normal gravity only and withholds the
- * verdict on levels whose declared gravity zones could change traversal.
+ * 'gravity-zone' is deliberately absent (issue #174): the restored
+ * inversion model (see isInvertedRegion / isStandable / sweepEdge) certifies
+ * inverted traversal, so a gravity-zone level that fails the flood-fill is
+ * genuinely unsolvable geometry, not a withheld verdict.
  */
 const TRAVERSAL_UNMODELED_TYPES: ReadonlySet<string> = new Set([
   'jetpack',
@@ -70,7 +72,6 @@ const TRAVERSAL_UNMODELED_TYPES: ReadonlySet<string> = new Set([
   'lever',
   'shifting-wall',
   'vanishing-floor',
-  'gravity-zone',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -106,18 +107,30 @@ const CONTROLLER_MAX_RUN = 120;
 const CONTROLLER_ACCEL = 800;
 
 // ---------------------------------------------------------------------------
-// Grid wrapper with optional standable overrides (moving platforms).
+// Grid wrapper with optional standable overrides (moving platforms) and
+// gravity-zone awareness.
 // ---------------------------------------------------------------------------
 
 /**
  * Internal grid representation that augments the base tile grid with:
  *  - extraStandable: cells made standable by moving platforms (both endpoints)
+ *  - gravityZones: rectangles where the gravity sign is inverted, so the
+ *    standable surface is above and jump/drop directions are mirrored
  */
 interface ValidatorGrid {
   cols: number;
   rows: number;
   tiles: readonly Tile[];
   extraStandable: Set<string>;
+  gravityZones: GravityZone[];
+}
+
+/** Inclusive top-left / exclusive bottom-right rectangle, in tile coords. */
+interface GravityZone {
+  colMin: number;
+  rowMin: number;
+  colMax: number; // exclusive
+  rowMax: number; // exclusive
 }
 
 function gridKey(col: number, row: number): string {
@@ -144,8 +157,9 @@ function isPassable(tile: Tile | undefined): boolean {
  * If the cell is in the `extraStandable` set (placed by a moving platform),
  * it is considered standable regardless of the underlying tile.
  *
- * Normal gravity only (issue #174): the shipped engine never inverts
- * gravity, so the surface is always below.
+ * Inside a gravity zone (issue #174) the surface is ABOVE instead of below:
+ * the tile at (col, row-1) must be Solid or OneWay, guarded by the world
+ * ceiling (row-1 < 0 is not standable, mirroring the floor guard).
  */
 function isStandable(
   grid: ValidatorGrid,
@@ -160,9 +174,32 @@ function isStandable(
   const here = grid.tiles[row * grid.cols + col];
   if (!isPassable(here)) return false;
 
+  if (isInvertedRegion(grid, col, row)) {
+    // Inverted gravity: surface must be above.
+    if (row - 1 < 0) return false; // ceiling of the world
+    const above = grid.tiles[(row - 1) * grid.cols + col];
+    return above === Tile.Solid || above === Tile.OneWay;
+  }
+
+  // Normal gravity: surface must be below.
   if (row + 1 >= grid.rows) return false; // floor of the world
   const below = grid.tiles[(row + 1) * grid.cols + col];
   return below === Tile.Solid || below === Tile.OneWay;
+}
+
+/**
+ * Returns true when (col, row) falls inside any gravity zone on the grid.
+ */
+function isInvertedRegion(grid: ValidatorGrid, col: number, row: number): boolean {
+  for (const zone of grid.gravityZones) {
+    if (
+      col >= zone.colMin && col < zone.colMax &&
+      row >= zone.rowMin && row < zone.rowMax
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -420,6 +457,7 @@ export function sweepEdge(
   nc: number,
   nr: number,
   jumpVelAbs: number,
+  inverted = false,
 ): boolean {
   const sx = col * TILE_SIZE + HALF_TILE;
   const sy = row * TILE_SIZE + HALF_TILE;
@@ -445,18 +483,26 @@ export function sweepEdge(
   //   v_min (grazing arc), 0.5x, 0.75x, and the full impulse.
   // Low arcs certify tight-headroom hops; the full arc certifies hops over
   // mid-path obstacles; a wall blocks every member of the family.
+  // Gravity sign: +1 normal (pulls toward +y, so the player launches toward
+  // -y and lands on the cell below); -1 inverted (the exact y-mirror: pulls
+  // toward -y, launches toward +y, lands on the cell above). Every vertical
+  // term below carries `gSign`, so one code path flies both parabolas.
+  const gSign = inverted ? -1 : 1;
   const dy = sy - ey;
-  const vMin = Math.sqrt(2 * CONTROLLER_GRAVITY * Math.max(dy, 0));
+  // Minimum launch speed whose apex exactly reaches the destination. The
+  // "against gravity" displacement is gSign * dy (positive when the target
+  // lies opposite the pull).
+  const vMin = Math.sqrt(2 * CONTROLLER_GRAVITY * Math.max(gSign * dy, 0));
 
   const candidates: number[] = [];
   for (const f of [1, 0.75, 0.5]) {
     const v = jumpVelAbs * f;
     if (v >= vMin - 1e-9) candidates.push(v);
   }
-  if (dy > 0) candidates.push(vMin);
+  if (gSign * dy > 0) candidates.push(vMin);
 
   for (const v0 of candidates) {
-    const disc = v0 * v0 - 2 * CONTROLLER_GRAVITY * dy;
+    const disc = v0 * v0 - 2 * CONTROLLER_GRAVITY * gSign * dy;
     if (disc < 0) continue;
     const tLand = (v0 + Math.sqrt(disc)) / CONTROLLER_GRAVITY;
     const vx = (ex - sx) / tLand;
@@ -465,7 +511,7 @@ export function sweepEdge(
     // (leftward arcs are negative), so the cap must test the magnitude.
     // The unsigned comparison let leftward arcs bypass it entirely.
     if (Math.abs(vx) > CONTROLLER_MAX_RUN) continue;
-    const apexY = sy - (v0 * v0) / (2 * CONTROLLER_GRAVITY);
+    const apexY = sy - gSign * (v0 * v0) / (2 * CONTROLLER_GRAVITY);
 
     // Bounding box precheck over the full arc. A descending arc can be
     // stopped by a one-way shelf, so OneWay presence in the region defeats
@@ -497,7 +543,7 @@ export function sweepEdge(
     for (let i = 0; i <= samples; i++) {
       const t = (tLand * i) / samples;
       const x = sx + vx * t;
-      const y = sy - v0 * t + (CONTROLLER_GRAVITY / 2) * t * t;
+      const y = sy - gSign * v0 * t + gSign * (CONTROLLER_GRAVITY / 2) * t * t;
       if (sampleBlocksBody(grid, x, y, prevBottom)) {
         arcOk = false;
         break;
@@ -528,8 +574,12 @@ export function sweepEdge(
   // upward and dropping back below it. Only the distance coverable in
   // that window (accelerating from rest to MAX_RUN) qualifies; beyond
   // that the detour would glide, which jump dynamics cannot sustain.
-  if (nr < row && (row - nr) * TILE_SIZE <= (jumpVelAbs * jumpVelAbs) / (2 * CONTROLLER_GRAVITY)) {
-    const risePx = (row - nr) * TILE_SIZE;
+  // Direction of travel relative to the pull: "rising" means moving against
+  // gravity (gSign * (row - nr) > 0), "falling" means moving with it.
+  const rising = gSign * (row - nr) > 0;
+  const falling = gSign * (nr - row) > 0;
+  if (rising && Math.abs(row - nr) * TILE_SIZE <= (jumpVelAbs * jumpVelAbs) / (2 * CONTROLLER_GRAVITY)) {
+    const risePx = Math.abs(row - nr) * TILE_SIZE;
     // Time from the destination altitude to the apex and back down to it.
     const vAtAlt = Math.sqrt(jumpVelAbs * jumpVelAbs - 2 * CONTROLLER_GRAVITY * risePx);
     const tAbove = (2 * vAtAlt) / CONTROLLER_GRAVITY;
@@ -593,7 +643,7 @@ export function sweepEdge(
   // glides across chasms the real controller cannot cross (ballistic drift
   // on a shallow fall is bounded by MAX_RUN times the fall time, far short
   // of what the old drift allowed).
-  if (nr > row) {
+  if (falling) {
     const dir = Math.sign(nc - col);
     const fallCol = dir === 0 ? col : col + dir;
     const fcx = fallCol * TILE_SIZE + HALF_TILE;
@@ -743,10 +793,18 @@ interface MovingTerrainInfo {
   bRow: number;
 }
 
+interface GravityZoneInfo {
+  colMin: number;
+  rowMin: number;
+  colMax: number; // exclusive
+  rowMax: number; // exclusive
+}
+
 interface ExtractedMechanics {
   springs: SpringInfo[];
   teleporters: TeleporterInfo[];
   movingTerrain: MovingTerrainInfo[];
+  gravityZones: GravityZoneInfo[];
 }
 
 /**
@@ -768,17 +826,17 @@ function computeSpringRiseTiles(impulseY: number): number {
 
 /**
  * Extracts mechanics info from the level's optional `mechanics` array.
- * Unknown mechanic types are silently skipped—the validator only models
- * mechanics that affect pathfinding geometry. Gravity zones are among the
- * skipped types (issue #174): inversion is an engine no-op, so the BFS
- * models normal gravity only and the failed verdict is withheld as
- * 'not-modelled' via TRAVERSAL_UNMODELED_TYPES instead.
+ * Unknown mechanic types are silently skipped: the validator only models
+ * mechanics that affect pathfinding geometry. Gravity zones ARE extracted
+ * (issue #174): the inversion model consumes them to mirror standability
+ * and the jump/drop envelope inside their rectangles.
  */
 function extractMechanics(level: LevelData): ExtractedMechanics {
   const result: ExtractedMechanics = {
     springs: [],
     teleporters: [],
     movingTerrain: [],
+    gravityZones: [],
   };
 
   const mechanics = level.mechanics;
@@ -795,9 +853,11 @@ function extractMechanics(level: LevelData): ExtractedMechanics {
       case 'moving-platform':
         extractMovingPlatform(entry, result);
         break;
+      case 'gravity-zone':
+        extractGravityZone(entry, result);
+        break;
       default:
-        // Unrecognized (or unmodelled, e.g. gravity-zone) mechanic type —
-        // not pathfinding-modelled here.
+        // Unrecognized mechanic type: not pathfinding-relevant.
         break;
     }
   }
@@ -866,6 +926,30 @@ function extractMovingPlatform(entry: MechanicEntry, result: ExtractedMechanics)
   result.movingTerrain.push({ aCol, aRow, bCol, bRow });
 }
 
+/**
+ * Extracts a gravity zone's tile rectangle. The zone inverts gravity for any
+ * body overlapping it, so the validator mirrors standability and the jump/
+ * drop envelope inside these bounds. Params are pixel-space x/y (top-left)
+ * plus width/height (issue #174).
+ */
+function extractGravityZone(entry: MechanicEntry, result: ExtractedMechanics): void {
+  const x = numParam(entry.params, 'x');
+  const y = numParam(entry.params, 'y');
+  const width = numParam(entry.params, 'width');
+  const height = numParam(entry.params, 'height');
+  if (x === undefined || y === undefined ||
+      width === undefined || height === undefined) return;
+
+  const colMin = pxToTile(x);
+  const rowMin = pxToTile(y);
+  const colMax = pxToTile(x + width);
+  const rowMax = pxToTile(y + height);
+  // Degenerate rects invert nothing.
+  if (colMax <= colMin || rowMax <= rowMin) return;
+
+  result.gravityZones.push({ colMin, rowMin, colMax, rowMax });
+}
+
 // ---------------------------------------------------------------------------
 // Core BFS
 // ---------------------------------------------------------------------------
@@ -883,7 +967,8 @@ export function validateSolvability(level: LevelData): SolvabilityResult {
   //
   // Mechanics (#129 cp7): springs, teleporters, and moving platforms
   // augment the BFS graph. See extractMechanics for details. Gravity
-  // zones are not modelled (issue #174).
+  // zones ARE modelled (issue #174): inside a zone the gravity sign flips,
+  // so standability and the jump/drop envelope are mirrored.
   //
   // Every edge is swept for solid obstruction (#161); see sweepEdge.
 
@@ -936,6 +1021,7 @@ export function bfsReachable(level: LevelData): boolean {
     rows: baseGrid.rows,
     tiles: baseGrid.tiles,
     extraStandable,
+    gravityZones: mech.gravityZones,
   };
 
   // Pre-compute spring launch neighbor sets keyed by spring tile.
@@ -1006,6 +1092,9 @@ export function bfsReachable(level: LevelData): boolean {
     if (col === level.exit.col && row === level.exit.row) return true;
 
     const posKey = gridKey(col, row);
+    // Gravity sign at the source cell (issue #174): inside a zone the pull
+    // is inverted, so the jump/drop envelope mirrors about the player.
+    const inverted = isInvertedRegion(grid, col, row);
 
     // Determine which neighbor set applies at this position.
     // Springs override the normal jump envelope if the player is on the
@@ -1013,13 +1102,28 @@ export function bfsReachable(level: LevelData): boolean {
     let neighbors: Array<{ dc: number; dr: number }>;
     let jumpVelAbs = NORMAL_JUMP_VEL_ABS;
 
-    // Choose neighbor set: spring takes precedence if present.
-    const springAt = springCache.get(posKey);
+    // Choose neighbor set: spring takes precedence if present. Springs inside
+    // a gravity zone are exempt: the engine's spring impulse overwrites vy in
+    // absolute terms, independent of the gravity sign (pinned in
+    // spring.test.ts: applySpringImpulse assigns impulseY directly), so the
+    // modelled rise, which assumes the launch fights normal gravity, does
+    // not describe flight once the pull is inverted. Falling back to the
+    // zone-mirrored jump envelope under-certifies reach rather than
+    // certifying a launch the engine cannot actually make.
+    const springAt = inverted ? undefined : springCache.get(posKey);
     if (springAt) {
       neighbors = springAt.neighbors;
       jumpVelAbs = springAt.impulseAbs;
     } else {
       neighbors = NEIGHBORS;
+    }
+
+    // In an inverted region, mirror every vertical offset: a "jump against
+    // gravity" moves toward +y (the zone's floor is above the player), and a
+    // "drop with gravity" moves toward -y. The envelope is symmetric, so the
+    // mirrored neighbor set covers the same local reach.
+    if (inverted) {
+      neighbors = neighbors.map(({ dc, dr }) => ({ dc, dr: -dr }));
     }
 
     for (const { dc, dr } of neighbors) {
@@ -1047,9 +1151,10 @@ export function bfsReachable(level: LevelData): boolean {
       // Swept-path obstruction (issue #161): every edge must be physically
       // flyable. Walks translate a player-sized box; jumps and drops sweep
       // the controller's parabola (plus the walk-off composite for drops).
+      // `inverted` tells the sweep which way gravity pulls at the source.
       if (dr === 0 && Math.abs(dc) === 1) {
         if (!walkPathClear(grid, col, row, nc)) continue;
-      } else if (!sweepEdge(grid, col, row, nc, nr, jumpVelAbs)) {
+      } else if (!sweepEdge(grid, col, row, nc, nr, jumpVelAbs, inverted)) {
         continue;
       }
 
