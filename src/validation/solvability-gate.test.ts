@@ -56,28 +56,43 @@ function composeCatalog(): Array<{ world: string; id: string; source: unknown }>
   return out;
 }
 
+/**
+ * The gate's contrapositive assertion, extracted so the anti-stale pin
+ * below exercises the exact logic the shipped catalog is judged by:
+ *
+ *   reachable  <=>  NOT allowlisted
+ *
+ * Throws when the invariant is violated for one level.
+ */
+function expectGateHolds(
+  id: string,
+  source: unknown,
+  allowlist: Readonly<Record<string, string>>,
+): void {
+  const result = validateSolvability(loadLevel(source));
+
+  const reason = allowlist[id];
+  if (reason !== undefined) {
+    // Allowlisted: the gate must STILL fail to certify it, otherwise the
+    // entry is stale and must be removed.
+    expect(
+      result.status === 'solvable',
+      `"${id}" validates reachable; remove the stale allowlist entry "${reason}"`,
+    ).toBe(false);
+    return;
+  }
+
+  // Not allowlisted: the gate must certify it solvable.
+  expect(result.status, `"${id}" failed the gate: ${JSON.stringify(result)}`).toBe('solvable');
+}
+
 describe('solvability gate over all shipped levels (#161)', () => {
   it('covers exactly the 45 shipped levels', () => {
     expect(composeCatalog()).toHaveLength(45);
   });
 
   it.each(composeCatalog())('$world/$id: reachable iff not allowlisted', ({ id, source }) => {
-    const level = loadLevel(source);
-    const result = validateSolvability(level);
-
-    const reason = ALLOWLIST[id];
-    if (reason !== undefined) {
-      // Allowlisted: the gate must STILL fail to certify it, otherwise the
-      // entry is stale and must be removed.
-      expect(
-        result.status === 'solvable',
-        `"${id}" validates reachable; remove the stale allowlist entry "${reason}"`,
-      ).toBe(false);
-      return;
-    }
-
-    // Not allowlisted: the gate must certify it solvable.
-    expect(result.status, `"${id}" failed the gate: ${JSON.stringify(result)}`).toBe('solvable');
+    expectGateHolds(id, source, ALLOWLIST);
   });
 });
 
@@ -135,5 +150,72 @@ describe('gate self-verification (#161)', () => {
         `"${id}" is proven completable by simulation but the gate neither certifies nor allowlists it (${JSON.stringify(result)})`,
       ).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Taxonomy pins (#161 fix round)
+//
+// Previously-untested claims of the structured verdict: the not-modelled
+// withholding for unmodelled traversal mechanics, and the anti-stale
+// contrapositive of the gate assertion.
+// ---------------------------------------------------------------------------
+
+describe('structured verdict taxonomy pins (#161)', () => {
+  it('lift-off withholds the verdict as not-modelled due to the jetpack', () => {
+    // The jetpack is traversal-relevant and not modelled by the BFS, so a
+    // failed flood-fill must be WITHHELD (not-modelled), never declared
+    // unsolvable, and the offending mechanic must be named.
+    const result = validateSolvability(loadLevel(WORLD2_LEVELS['lift-off']));
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('jetpack');
+  });
+
+  it('mechanism withholds the verdict as not-modelled due to the shifting wall', () => {
+    // Same taxonomy for the shifting-wall trap: it rearranges geometry at
+    // runtime, so the static sweep failing must withhold the verdict and
+    // name the trap.
+    const result = validateSolvability(loadLevel(WORLD2_LEVELS['mechanism']));
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('shifting-wall');
+  });
+
+  it('anti-stale contrapositive: a reachable level named in an allowlist FAILS the gate', () => {
+    // Pins the eviction half of "reachable <=> NOT allowlisted": once a
+    // previously-blocked level starts validating reachable, its allowlist
+    // entry is stale and the gate assertion must throw. Constructed with a
+    // synthetic level and a synthetic allowlist; the shipped catalogs and
+    // the real ALLOWLIST are untouched.
+    const syntheticAllowlist: Readonly<Record<string, string>> = {
+      'synthetic-open':
+        'fabricated blocker that no longer applies: the corridor validates reachable',
+    };
+    const syntheticCorridor = {
+      name: 'synthetic-open',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1000000001',
+        '1111111111',
+      ],
+      traps: [],
+    };
+
+    // Positive control: the synthetic level validates solvable and is NOT
+    // named, so the gate holds.
+    expect(() =>
+      expectGateHolds('some-other-id', syntheticCorridor, syntheticAllowlist),
+    ).not.toThrow();
+
+    // Contrapositive: the same reachable level IS named in the synthetic
+    // allowlist, so the stale-entry assertion must fire.
+    expect(() =>
+      expectGateHolds('synthetic-open', syntheticCorridor, syntheticAllowlist),
+    ).toThrow(/stale allowlist entry/);
   });
 });
