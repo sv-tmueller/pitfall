@@ -203,4 +203,40 @@ describe('renderFrame', () => {
     expect(cam2.x).toBe(0);
     expect(cam2.y).toBe(204);
   });
+
+  it('displaces every draw by the nonzero shake offset', () => {
+    // Guards the renderer's shakeOffset composition (renderer.ts composes
+    // it after computeCamera); a regression zeroing that compose would pass
+    // every other test, which all feed {x:0, y:0}.
+    const steady = createMockCtx();
+    const shaken = createMockCtx();
+    const base: Omit<RenderContext, 'shakeOffset'> = {
+      atlas: ATLAS,
+      world: worldFromLevel(LEVEL),
+      camera: { x: 0, y: 0 },
+      entities: [],
+      prevEntities: [],
+      levelIndex: 0,
+      particles: [],
+    };
+    renderFrame(steady, { ...base, shakeOffset: { x: 0, y: 0 } }, 0);
+    renderFrame(shaken, { ...base, shakeOffset: { x: 3, y: -2 } }, 0);
+
+    const steadyDraws = steady.calls.filter((c) => c.method === 'drawImage');
+    const shakenDraws = shaken.calls.filter((c) => c.method === 'drawImage');
+    expect(shakenDraws.length).toBe(steadyDraws.length);
+    expect(shakenDraws.length).toBeGreaterThan(0);
+    for (let i = 0; i < shakenDraws.length; i += 1) {
+      const s = steadyDraws[i]!.args as number[];
+      const k = shakenDraws[i]!.args as number[];
+      // drawImage destination pair shifts by the NEGATED shake offset
+      // (renderer composes camera + shake as pos - offset).
+      expect(k[5]).toBe(s[5]! - 3);
+      expect(k[6]).toBe(s[6]! + 2);
+      expect(k[0]).toBe(s[0]);
+      expect(k[1]).toBe(s[1]);
+      expect(k[7]).toBe(s[7]);
+      expect(k[8]).toBe(s[8]);
+    }
+  });
 });
