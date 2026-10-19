@@ -11,14 +11,16 @@
 // resolveY refusing the integrated position, or a grounded flip.
 //
 // Domain. The sweep samples poses of a descending body along an arc, up to and
-// including the flush landing pose; the six probes below stay inside that
-// domain. Both views of every fixture are parsed from one digit matrix, so the
+// including the flush landing pose; the six #179 probes stay inside that
+// domain, and probe 7 deliberately opens one pose past it (a bottom edge
+// already inside the shelf row) to pin the came-from-above false branch.
+// Both views of every fixture are parsed from one digit matrix, so the
 // engine grid (testGrid.parseGrid) and the validator grid cannot drift apart.
-// Five probes run with vx = 0, which makes resolveX a provable no-op (its
-// vx === 0 branch returns body.x + 0 * dt); the sixth drives a real lateral
+// Six probes run with vx = 0, which makes resolveX a provable no-op (its
+// vx === 0 branch returns body.x + 0 * dt); the seventh drives a real lateral
 // drift against a lone shelf tile.
 //
-// Non-vacuity. Agreement alone cannot pass here: each of the six probes also
+// Non-vacuity. Agreement alone cannot pass here: each of the seven probes also
 // asserts the known verdict direction per transition, and three intentional,
 // test-local mutants (marked INTENTIONAL MUTANT, never shipped) must produce
 // the exact disagreement fingerprint they are built to produce. The real
@@ -35,11 +37,17 @@ import {
   type TileGrid,
 } from '../engine/physics';
 import { parseGrid } from '../engine/testGrid';
+import { PLAYER_HEIGHT, PLAYER_WIDTH } from '../game/constants';
 import { Tile } from '../levels/types';
 import { sampleBlocksBody } from './reachability';
 
 const PLAYER_SIZE = 16;
 const HALF = PLAYER_SIZE / 2;
+
+// Pin the harness's player box to the game layer's constant so a future
+// player resize cannot leave this harness silently testing a stale box.
+expect(PLAYER_SIZE).toBe(PLAYER_WIDTH);
+expect(PLAYER_SIZE).toBe(PLAYER_HEIGHT);
 
 // Digit code to engine testGrid char: '.' Empty, '#' Solid, '-' OneWay.
 const ENGINE_CHAR: Record<string, string> = { '0': '.', '1': '#', '2': '-' };
@@ -393,7 +401,7 @@ describe('one-way parity: full-width shelf descent', () => {
 
   it('arrests the body on the shelf top, never below it', () => {
     const landing = stepAt(P1_FULL_WIDTH_DESCENT, 20);
-    // 48 px of rest-start fall plus 5 px on the crossing step: bottom 95.5 to
+    // 47.5 px of rest-start fall plus 5 px on the crossing step: bottom 95.5 to
     // 100.5 crosses the shelf top at 96, so the engine lands it flush.
     expect(landing.prevBottom).toBe(95.5);
     expect(landing.integratedY + PLAYER_SIZE).toBe(100.5);
@@ -743,6 +751,7 @@ describe('non-vacuity: predicate mutant, upper descent bound relaxed', () => {
       P4_LAND_AND_REST,
       P5_ASCEND_THROUGH,
       P6_DRIFT_PAST_LONE_SHELF,
+      P7_OVERLAP_DESCENT,
     ]) {
       expect(disagreeingSteps(probe, mutantPredicateInclusiveUpperBound)).toEqual([]);
     }
