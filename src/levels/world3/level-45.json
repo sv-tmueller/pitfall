@@ -28,7 +28,7 @@
     "12222222222000000001",
     "12222222222033000001",
     "10000002000000000001",
-    "10000001000001000001",
+    "10001001000001000001",
     "10000001000001000001",
     "10000001000001000001",
     "10000000000001000001",
@@ -123,7 +123,7 @@
       "params": {
         "x": 160,
         "y": 336,
-        "destX": 112,
+        "destX": 64,
         "destY": 256,
         "oneWay": false,
         "preserveMomentum": false
@@ -133,7 +133,7 @@
       "id": "finale-tp-b",
       "type": "teleporter",
       "params": {
-        "x": 112,
+        "x": 64,
         "y": 256,
         "destX": 160,
         "destY": 336,
@@ -145,14 +145,14 @@
       "id": "finale-platform-left",
       "type": "moving-platform",
       "params": {
-        "startX": 112,
-        "startY": 256,
+        "startX": 64,
+        "startY": 272,
         "width": 16,
         "height": 16,
-        "dx": -48,
+        "dx": 0,
         "dy": -64,
         "speed": 60,
-        "distance": 80
+        "distance": 64
       }
     },
     {

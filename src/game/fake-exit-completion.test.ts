@@ -6,11 +6,12 @@
 //   vanishing-floor gauntlet and the spike tile), hops east onto the row-2
 //   band to trigger the fleeing door, then drops back west and jumps up
 //   through the escaped door at (2,1).
-//   w3/45 rides the bottom teleporter, sprints west out of the crusher
-//   pocket, climbs the west bands, crosses east to the row-3 shelf under
-//   the original exit to trigger the door, and returns west to the column-2
-//   shaft under the escaped door. Inputs are mirrored: the level carries a
-//   permanent control-inversion mechanic.
+//   w3/45 rides the bottom teleporter WEST to the pillar dock at (64,256),
+//   boards the column-4 elevator to the row-13 ledge, alternates 16-px hops
+//   up the west band ladder to the row-4 corridor, walks east along row 4 to
+//   the trigger ring of the fleeing door, then doubles back west and jumps
+//   up through the escaped door at (2,1). Inputs are mirrored: the level
+//   carries a permanent control-inversion mechanic.
 import { describe, expect, it } from 'vitest';
 import { createScene, stepScene, type SceneActions, type SceneState } from './scene';
 import { MVP_LEVELS } from '../levels/mvp/index';
@@ -205,17 +206,165 @@ describe('fake-exit levels remain completable', () => {
     expect(state.phase).toMatch(/entering|complete/);
   });
 
-// w3/45 (world-3-finale) is NOT completable as shipped, and never was:
-  // the only ascent to the midsection is the teleporter at (160,336), whose
-  // destination (112,256) is a standable one-way cap inside the bot-crush
-  // crusher's on-enter danger zone (x 112-144, y 224-272). The crusher
-  // drops 3 px/step for 48 px; a full-speed west sprint off the cap loses
-  // the escape race by 2 px (observed on this branch AND on origin/main:
-  // both end in phase=dying), and any jump intersects the descending
-  // solid within ~5 steps. Every alternative ascent is geometrically out
-  // of reach: the engine's jump apex is 260^2 / (2 x 900) ~= 37.6 px
-  // (JUMP_VEL -260, GRAVITY 900), versus the 80 px col-13 pillar and the
-  // 96 px lowest west one-way. Level redesign is an explicit non-goal of
-  // issue #160; tracked separately.
-  it.todo('w3/45 world-3-finale completes (blocked by a pre-existing level deadlock)');
+  it('w3/45 world-3-finale completes via the west-pillar elevator', () => {
+    // Issue #171 executable acceptance proof. The teleporter pair now docks
+    // at the west pillar: TP-a (160,336) deposits the body at (64,256),
+    // standing on the row-17 solid at column 4, clear of the crusher's
+    // on-enter danger zone (x 112-144, y 224-272). finale-platform-left is
+    // a pure vertical elevator at column 4: it rests flush with the pillar
+    // top (y 272), so boarding is wait-only, and it ferries the rider up
+    // 64 px to the row-13 one-way ledge (cols 4-5, top y 208). From there
+    // the climb alternates 16-px hops up the west band ladder (rows 13,
+    // 12, 11, ..., 4; odd/even bands are offset one column apart) to the
+    // row-4 corridor, then east along row 4 into the fleeing door's
+    // trigger ring near the original exit. Doubling back west reaches the
+    // escaped door at (2,1). Inputs are mirrored throughout: the level
+    // carries a permanent control-inversion mechanic. If the dock ever
+    // drifts back into the crusher zone, the body dies in the pocket and
+    // this goes red; if the elevator or inversion regresses, the ride or
+    // the climb stalls and this goes red.
+    const platRest = (s: SceneState): number => {
+      const solids = s.mechanicsRuntime.publishedSolids;
+      const p = solids.find((sol) => sol.id === 'finale-platform-left');
+      return p ? p.y : -1;
+    };
+    // Phase machine (the waypointBot strands on this level: the teleporter
+    // fires at the pad's west edge, before any pad-centered waypoint's
+    // advance window opens). Phases advance on robust physical cues:
+    //   floorWalkEast -> (teleport: sudden y drop) -> dockWait ->
+    //   (elevator rests at 272) -> rideHold -> (deposited on row-12 band,
+    //   platform heading down) -> ladderHop -> (body row 4) -> corridorEast
+    //   -> (door fled to (2,1)) -> corridorWest -> (under the door) ->
+    //   doorJump -> entering|complete.
+    let phase: 'floorWalkEast' | 'dockWait' | 'rideHold' | 'ladderHop' | 'corridorEast' | 'corridorWest' | 'doorJump' =
+      'floorWalkEast';
+    const policy = (s: SceneState): SceneActions => {
+      const body = s.controller.body;
+      const cx = body.x + body.width / 2;
+      const idle: SceneActions = { left: false, right: false, jumpPressed: false, jumpHeld: false, restart: false };
+      switch (phase) {
+        case 'floorWalkEast':
+          if (body.y < 300) {
+            phase = 'dockWait';
+            return idle;
+          }
+          return { ...idle, right: true };
+        case 'dockWait':
+          // Stand still on the dock; board when the elevator rests at the
+          // pillar top. Mirrored: emitted right steers the body west onto
+          // the platform center if the dock nudged it east.
+          if (platRest(s) >= 270) return { ...idle, left: true };
+          return idle;
+        case 'rideHold':
+          // Carried up; released when the body stands on the row-12 band
+          // and the platform has begun its descent (topped out).
+          if (body.grounded && body.y <= 193 && platRest(s) > 209) {
+            phase = 'ladderHop';
+          }
+          return idle;
+        case 'ladderHop': {
+          // Hop north up the west band ladder: full-height jumps (held),
+          // aligned to column 3 (cx 40..56), 16 px per landing.
+          const aligned = Math.abs(cx - 40) <= 2;
+          if (body.grounded && aligned && body.y > 52) {
+            return { ...idle, jumpPressed: true, jumpHeld: true };
+          }
+          if (body.grounded && !aligned) {
+            return body.y > 52 ? { ...idle, left: cx > 40, right: cx < 40 } : idle;
+          }
+          if (body.y <= 52 && body.grounded) {
+            phase = 'corridorEast';
+            return idle;
+          }
+          return { ...idle, jumpHeld: true };
+        }
+        case 'corridorEast':
+          // Bunny-hop east along row 4: the closest grounded stance is
+          // 48.2 px from the exit center (trigger needs < 48), but a hop
+          // apex puts the body center ~10 px from it mid-air, firing the
+          // flee deterministically. Wrapper pre-mirrors, the level's
+          // inversion mirrors again: policy directions are PHYSICAL.
+          if (fledTo(2, 1)(s)) {
+            phase = 'corridorWest';
+            return idle;
+          }
+          if (body.grounded) return { ...idle, right: true, jumpPressed: true, jumpHeld: true };
+          return { ...idle, right: true, jumpHeld: true };
+        case 'corridorWest':
+          // Return west along row 4 to under the escaped door at (2,1).
+          if (cx <= 44) {
+            phase = 'doorJump';
+            return idle;
+          }
+          return { ...idle, left: true };
+        case 'doorJump':
+          // Full jump from row 4 rises through the door AABB at (2,1).
+          if (s.phase === 'playing' && body.grounded) {
+            return { ...idle, jumpPressed: true, jumpHeld: true };
+          }
+          return { ...idle, jumpHeld: true };
+      }
+    };
+    // Ride transition: dockWait hands to rideHold once boarded (carried
+    // above the dock height). Emissions are mirrored here because the
+    // level's control-inversion mechanic mirrors them AGAIN after the
+    // policy (net normal), matching the waypointBot mirror convention.
+    const wrapped = (s: SceneState): SceneActions => {
+      if (phase === 'dockWait') {
+        const b = s.controller.body;
+        if (b.y < 250) phase = 'rideHold';
+      }
+      const a = policy(s);
+      return { ...a, left: a.right, right: a.left };
+    };
+    const { state } = play(WORLD3_LEVELS['world-3-finale'], wrapped, 2500);
+    expect(state.phase).toMatch(/entering|complete/);
+  });
+
+  it('w3/45 structural pins: teleport dock is disjoint from every crusher danger zone', () => {
+    // Pure data assertions, no RNG, no timing. The relocated dock must be
+    // standable (solid support below) and clear of every on-enter crusher
+    // zone in the level. The negative probe asserts the PRE-FIX dock
+    // (112,256) DOES intersect the zone, proving the pin detects exactly
+    // the failure class that made the level impossible.
+    const source = WORLD3_LEVELS['world-3-finale'] as {
+      traps: Array<{
+        type: string;
+        params: { col: number; row: number; width: number; height: number; dropDistance: number };
+      }>;
+      mechanics: Array<{ id: string; params: Record<string, number> }>;
+      tiles: string[];
+    };
+    const zones = source.traps
+      .filter((t) => t.type === 'crusher')
+      .map((t) => {
+        const { col, row, width, height, dropDistance } = t.params;
+        return { x: col * 16, y: (row + height) * 16, w: width * 16, h: dropDistance };
+      });
+    expect(zones.length).toBeGreaterThanOrEqual(1);
+
+    // Body AABB at the dock: 16x16 anchored at (destX, destY).
+    const disjoint = (dock: { x: number; y: number }) =>
+      zones.every(
+        (z) =>
+          dock.x + 16 <= z.x ||
+          dock.x >= z.x + z.w ||
+          dock.y + 16 <= z.y ||
+          dock.y >= z.y + z.h,
+      );
+    // Pin 1: the shipped dock is clear of every crusher zone.
+    const dock = source.mechanics.find((m) => m.id === 'finale-tp-a')!.params;
+    expect(disjoint({ x: dock.destX!, y: dock.destY! })).toBe(true);
+    // Negative probe: the PRE-FIX dock (112,256) sat inside the zone.
+    expect(disjoint({ x: 112, y: 256 })).toBe(false);
+    // Pin 2: the dock is standable - solid support at (row 17, col 4).
+    expect(source.tiles[17]![4]).toBe('1');
+
+    // Sanity anchors for the elevator: docks flush with the pillar top.
+    const plat = source.mechanics.find((m) => m.id === 'finale-platform-left')!;
+    expect(plat.params.startX!).toBe(64);
+    expect(plat.params.startY!).toBe(272);
+    expect(plat.params.dy!).toBe(-64);
+    expect(plat.params.distance!).toBe(64);
+  });
 });
