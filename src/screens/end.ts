@@ -11,6 +11,9 @@ export interface EndState {
   readonly flashTimer: number;
 }
 
+/** Confirm-key hint advertised on the end screen. */
+export const END_REPLAY_HINT = 'PRESS SPACE OR ENTER - OR CLICK';
+
 export function createEndState(totalDeaths: number): EndState {
   return { totalDeaths: Math.max(0, Math.floor(totalDeaths)), flashTimer: 0 };
 }
@@ -21,10 +24,13 @@ export function stepEnd(state: EndState, input: InputSnapshot, dt: number): EndS
   return { ...state, flashTimer: (state.flashTimer + 1) % 60 };
 }
 
-/** Rising-edge confirm on the end screen: jump restarts the campaign. */
+/**
+ * Rising-edge confirm on the end screen: jump or confirm (Enter, or a canvas
+ * click bridged to the confirm action) restarts the campaign.
+ */
 export function getEndTransition(state: EndState, input: InputSnapshot): 'replay' | null {
   void state;
-  return input.pressed.jump ? 'replay' : null;
+  return input.pressed.jump || input.pressed.confirm ? 'replay' : null;
 }
 
 /** Human-readable total-death line, singular/plural safe. */
@@ -60,7 +66,7 @@ export function buildEndModel(state: EndState): RenderModel {
   // The replay prompt blinks so it reads as an invitation, not a label.
   if (state.flashTimer < 30) {
     texts.push({
-      text: 'JUMP TO REPLAY',
+      text: END_REPLAY_HINT,
       x: 64,
       y: 120,
       color: 'edge' as PaletteToken,

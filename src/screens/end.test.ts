@@ -12,7 +12,7 @@ function snap(
   pressed: Partial<Record<string, boolean>> = {},
   held: Partial<Record<string, boolean>> = {},
 ): InputSnapshot {
-  const empty = { left: false, right: false, jump: false, restart: false, pause: false };
+  const empty = { left: false, right: false, jump: false, restart: false, pause: false, confirm: false };
   return {
     held: { ...empty, ...held },
     pressed: { ...empty, ...pressed },
@@ -49,7 +49,12 @@ describe('end screen', () => {
     expect(getEndTransition(s, snap({ jump: true }))).toBe('replay');
   });
 
-  it('getEndTransition returns null without a jump edge', () => {
+  it('getEndTransition returns replay on a confirm edge', () => {
+    const s = createEndState(0);
+    expect(getEndTransition(s, snap({ confirm: true }))).toBe('replay');
+  });
+
+  it('getEndTransition returns null without a jump or confirm edge', () => {
     const s = createEndState(0);
     expect(getEndTransition(s, snap())).toBeNull();
   });
@@ -72,12 +77,12 @@ describe('end screen', () => {
   it('buildEndModel blinks the replay prompt', () => {
     const visible = buildEndModel(createEndState(2));
     const visibleTexts = visible.layers.flatMap((layer) => layer.texts.map((t) => t.text));
-    expect(visibleTexts).toContain('JUMP TO REPLAY');
+    expect(visibleTexts).toContain('PRESS SPACE OR ENTER - OR CLICK');
 
     let s = createEndState(2);
     for (let i = 0; i < 30; i++) s = stepEnd(s, snap(), DT);
     const hidden = buildEndModel(s);
     const hiddenTexts = hidden.layers.flatMap((layer) => layer.texts.map((t) => t.text));
-    expect(hiddenTexts).not.toContain('JUMP TO REPLAY');
+    expect(hiddenTexts).not.toContain('PRESS SPACE OR ENTER - OR CLICK');
   });
 });

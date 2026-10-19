@@ -24,6 +24,22 @@ export interface TitleOptions {
   readonly hasProgress?: boolean;
 }
 
+/** Confirm-key hint, shown while the title screen waits for input. */
+export const TITLE_HINT = 'PRESS SPACE OR ENTER - OR CLICK';
+
+/**
+ * Control list plus the goal, rendered while HOW TO PLAY is highlighted.
+ * Five short lines fit the free band between the mark (y 40..56) and the
+ * option list (y 120 and below) at the renderer's 8px monospace.
+ */
+export const TITLE_INSTRUCTIONS: readonly string[] = [
+  'MOVE: ARROWS OR A/D',
+  'JUMP: SPACE OR UP',
+  'PAUSE: P OR ESC',
+  'RESTART: R',
+  'REACH THE EXIT IN EVERY LEVEL',
+];
+
 export function createTitleState(options: TitleOptions = {}): TitleState {
   return {
     showInstructions: false,
@@ -68,7 +84,9 @@ export function getTitleTransition(
   state: TitleState,
   input: InputSnapshot,
 ): TitleTransition | null {
-  if (!input.pressed.jump) return null;
+  // Confirm (Enter, or a canvas click bridged to the confirm action) commits
+  // the highlighted option exactly like the jump binding does.
+  if (!input.pressed.jump && !input.pressed.confirm) return null;
   if (state.selectedOption === 0) {
     return state.hasProgress ? 'continue' : 'start';
   }
@@ -90,8 +108,15 @@ export function buildTitleModel(state: TitleState): RenderModel {
     flipX: false,
   });
 
+  // The confirm hint blinks so it reads as an invitation, not a label.
+  // It sits below the option list, clear of the instruction band.
   if (state.flashTimer < 30) {
-    rects.push({ x: 100, y: 100, w: 120, h: 8, color: 'bone' as PaletteToken });
+    texts.push({
+      text: TITLE_HINT,
+      x: 64,
+      y: 170,
+      color: 'bone' as PaletteToken,
+    });
   }
 
   const startY = 120;
@@ -116,7 +141,14 @@ export function buildTitleModel(state: TitleState): RenderModel {
   }
 
   if (state.showInstructions) {
-    rects.push({ x: 60, y: 140, w: 200, h: 2, color: 'edge' as PaletteToken });
+    for (let i = 0; i < TITLE_INSTRUCTIONS.length; i++) {
+      texts.push({
+        text: TITLE_INSTRUCTIONS[i] ?? '',
+        x: 64,
+        y: 60 + i * 11,
+        color: 'bone' as PaletteToken,
+      });
+    }
   }
 
   return {

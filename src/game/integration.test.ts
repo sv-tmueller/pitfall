@@ -36,6 +36,7 @@ function createFakeInput(): KeyboardInput {
     'jump',
     'restart',
     'pause',
+    'confirm',
   ] as const;
 
   // Reverse-map codes to actions matching DEFAULT_BINDINGS.
@@ -49,6 +50,8 @@ function createFakeInput(): KeyboardInput {
     KeyR: 'restart',
     KeyP: 'pause',
     Escape: 'pause',
+    Enter: 'confirm',
+    NumpadEnter: 'confirm',
   };
 
   function emptyRecord(): Record<(typeof ACTION_KEYS)[number], boolean> {
@@ -125,6 +128,7 @@ describe('inputSnapshotToActions', () => {
         jump: true,
         restart: false,
         pause: false,
+        confirm: false,
       }),
       pressed: Object.freeze({
         left: false,
@@ -132,6 +136,7 @@ describe('inputSnapshotToActions', () => {
         jump: true,
         restart: false,
         pause: false,
+        confirm: false,
       }),
       released: Object.freeze({
         left: false,
@@ -139,6 +144,7 @@ describe('inputSnapshotToActions', () => {
         jump: false,
         restart: false,
         pause: false,
+        confirm: false,
       }),
     };
 
@@ -159,6 +165,7 @@ describe('inputSnapshotToSceneActions', () => {
         jump: false,
         restart: false,
         pause: false,
+        confirm: false,
       }),
       pressed: Object.freeze({
         left: false,
@@ -166,6 +173,7 @@ describe('inputSnapshotToSceneActions', () => {
         jump: false,
         restart: true,
         pause: false,
+        confirm: false,
       }),
       released: Object.freeze({
         left: false,
@@ -173,6 +181,7 @@ describe('inputSnapshotToSceneActions', () => {
         jump: false,
         restart: false,
         pause: false,
+        confirm: false,
       }),
     };
 

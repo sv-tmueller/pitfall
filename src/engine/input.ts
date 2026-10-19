@@ -1,6 +1,6 @@
-export type InputAction = 'left' | 'right' | 'jump' | 'restart' | 'pause';
+export type InputAction = 'left' | 'right' | 'jump' | 'restart' | 'pause' | 'confirm';
 
-const ACTIONS: readonly InputAction[] = ['left', 'right', 'jump', 'restart', 'pause'];
+const ACTIONS: readonly InputAction[] = ['left', 'right', 'jump', 'restart', 'pause', 'confirm'];
 
 export interface InputSnapshot {
   readonly held: Readonly<Record<InputAction, boolean>>;
@@ -16,7 +16,16 @@ export const DEFAULT_BINDINGS: KeyBindings = {
   jump: ['Space', 'ArrowUp'],
   restart: ['KeyR'],
   pause: ['KeyP', 'Escape'],
+  confirm: ['Enter', 'NumpadEnter'],
 };
+
+/**
+ * Code the pointer bridge presses. It is the first entry of the default
+ * confirm binding, so a click arrives at the same action as a keyboard
+ * confirm. Kept here rather than read off {@link DEFAULT_BINDINGS} because
+ * {@link attachClickConfirm} receives an input, not its binding table.
+ */
+const CONFIRM_POINTER_CODE = 'Enter';
 
 export interface KeyboardInput {
   keyDown(code: string): void;
@@ -171,3 +180,44 @@ export function attachKeyboardInput(input: KeyboardInput, source: KeyEventSource
 // window satisfies KeyEventSource without any runtime code here.
 type AssertAssignable<T extends U, U> = T;
 export type WindowIsAKeyEventSource = AssertAssignable<Window & typeof globalThis, KeyEventSource>;
+
+export type ConfirmPointerEventType = 'pointerdown' | 'pointerup' | 'blur';
+
+export interface ConfirmEventSource {
+  addEventListener(type: ConfirmPointerEventType, listener: () => void): void;
+  removeEventListener(type: ConfirmPointerEventType, listener: () => void): void;
+}
+
+/**
+ * Bridge a pointer press on `element` into the confirm action.
+ *
+ * pointerdown presses the confirm code and pointerup (or blur) releases it,
+ * so the click surfaces as a `pressed.confirm` edge in the NEXT
+ * {@link KeyboardInput.sample} instead of acting immediately. That keeps the
+ * polled path identical to the keyboard: the edge is consumed by the shell's
+ * once-per-step sample and drained on the transition frame, exactly like a
+ * key press. The bridge therefore never calls sample() itself.
+ */
+export function attachClickConfirm(input: KeyboardInput, element: ConfirmEventSource): () => void {
+  function onPointerDown(): void {
+    input.keyDown(CONFIRM_POINTER_CODE);
+  }
+
+  function onPointerUp(): void {
+    input.keyUp(CONFIRM_POINTER_CODE);
+  }
+
+  element.addEventListener('pointerdown', onPointerDown);
+  element.addEventListener('pointerup', onPointerUp);
+  element.addEventListener('blur', onPointerUp);
+
+  return function detach(): void {
+    element.removeEventListener('pointerdown', onPointerDown);
+    element.removeEventListener('pointerup', onPointerUp);
+    element.removeEventListener('blur', onPointerUp);
+  };
+}
+
+// Compile-time proof that attachClickConfirm(input, canvas) needs no cast:
+// HTMLCanvasElement satisfies ConfirmEventSource without any runtime code here.
+export type CanvasIsAConfirmEventSource = AssertAssignable<HTMLCanvasElement, ConfirmEventSource>;

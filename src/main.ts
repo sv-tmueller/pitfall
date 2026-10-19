@@ -3,7 +3,7 @@ import type { AtlasManifest } from './render/atlas';
 import { loadAtlas } from './render/atlas-loader';
 import type { BlitContext } from './render/batcher';
 import { BASE_HEIGHT, BASE_WIDTH, computeCanvasLayout } from './scale';
-import { attachKeyboardInput, createKeyboardInput } from './engine/input';
+import { attachClickConfirm, attachKeyboardInput, createKeyboardInput } from './engine/input';
 import { createRafTicker } from './engine/loop';
 import { createApp, formatBootError } from './game/app';
 import { createAccessibilitySettings, getEffectsIntensity } from './accessibility/accessibility';
@@ -72,6 +72,9 @@ function bootstrap(
 
   const input = createKeyboardInput();
   attachKeyboardInput(input, window);
+  // A canvas click presses and releases the confirm binding, so a trackpad
+  // player reaches the same polled confirm edge as the keyboard.
+  attachClickConfirm(input, canvas);
 
   // Reduced motion: honor the OS/browser preference. Under reduced motion
   // the effects intensity is 0 (no shake, no particles, no hit-stop).

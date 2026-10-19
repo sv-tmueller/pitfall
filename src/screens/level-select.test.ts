@@ -6,7 +6,7 @@ import type { InputSnapshot } from '../engine/input';
 const DT = 1 / 60;
 
 function snap(pressed: Partial<Record<string, boolean>> = {}): InputSnapshot {
-  const empty = { left: false, right: false, jump: false, restart: false, pause: false };
+  const empty = { left: false, right: false, jump: false, restart: false, pause: false, confirm: false };
   return {
     held: { ...empty },
     pressed: { ...empty, ...pressed },
