@@ -316,6 +316,7 @@ function createStubClickSource(): ConfirmEventSource & {
   const listeners = new Map<ConfirmPointerEventType, Set<ConfirmListener>>([
     ['pointerdown', new Set()],
     ['pointerup', new Set()],
+    ['pointercancel', new Set()],
     ['blur', new Set()],
   ]);
 
@@ -407,6 +408,34 @@ describe('attachClickConfirm', () => {
     source.emit('blur');
 
     expect(input.sample().held.confirm).toBe(false);
+  });
+
+  it('releases a held click when the pointer is cancelled mid-press', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    input.sample();
+    source.emit('pointercancel');
+
+    expect(input.sample().held.confirm).toBe(false);
+  });
+
+  it('does not swallow the next confirm after a cancelled click', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    // Pointerdown then pointercancel (release lost outside the canvas).
+    source.emit('pointerdown');
+    source.emit('pointercancel');
+    input.sample();
+
+    // The next physical Enter must still register a pressed edge.
+    input.keyDown('Enter');
+    expect(input.sample().pressed.confirm).toBe(true);
+    input.keyUp('Enter');
   });
 
   it('stays clear of every other action', () => {

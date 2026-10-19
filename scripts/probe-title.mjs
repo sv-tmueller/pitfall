@@ -24,7 +24,7 @@
  * Exit code 0 when every check passes, 1 otherwise.
  */
 
-/* global console, process, fetch, setTimeout, clearTimeout, URL, WebSocket, Buffer */
+/* global console, process, setTimeout, clearTimeout, URL, WebSocket, Buffer */
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -384,14 +384,6 @@ async function main() {
       window.dispatchEvent(new KeyboardEvent('keyup', { code: '${spec.code}', key: '${spec.key}', bubbles: true }));
     `);
   };
-
-  const keyEvent = (type, spec) => ({
-    type,
-    key: spec.key,
-    code: spec.code,
-    windowsVirtualKeyCode: spec.keyCode,
-    nativeVirtualKeyCode: spec.keyCode,
-  });
 
   const clickCanvas = async () => {
     await evaluate('window.focus();');
