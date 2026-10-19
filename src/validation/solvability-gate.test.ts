@@ -26,13 +26,14 @@ import { WORLD3_LEVELS, WORLD3_SEQUENCE } from '../levels/world3/index';
  * Every entry must reference a concrete, current blocker; the gate's
  * contrapositive assertion evicts entries that stop being true.
  *
- * Note on world-3-finale: issue #171's impossibility is a crusher
- * SURVIVAL race at the teleporter destination, not a geometry failure.
- * The swept BFS certifies a legal static route to the exit door, and the
- * sub-plan's own ruling excludes pure-hazard traps from reachability,
- * so the level is NOT allowlisted here. Practical completability stays
- * tracked by the it.todo in src/game/fake-exit-completion.test.ts and by
- * issue #171.
+ * Note on world-3-finale: the crusher-survival race that once made it
+ * practically impossible (issue #171) is fixed by rerouting the
+ * teleporter dock out of the danger zone; the swept BFS route it
+ * certifies is now genuinely survivable. The level is NOT allowlisted:
+ * it is both certified here and demonstrated end to end by the scripted
+ * completion test in src/game/fake-exit-completion.test.ts, guarded by
+ * structural disjointness pins against the dock drifting back into the
+ * crusher zone.
  */
 const ALLOWLIST: Readonly<Record<string, string>> = {
   'lift-off':
