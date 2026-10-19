@@ -1,7 +1,7 @@
-// Level validation harness: reachability and solvability checks (#44).
+// Level validation harness: reachability and solvability checks (#44, #161).
 // BFS flood-fill from spawn through the tile grid using movement constraints
-// derived from the real controller physics. Checks every mutation variant,
-// not just the base level.
+// derived from the real controller physics, with every edge swept for solid
+// obstruction.
 //
 // Jump envelope (calibrated to the shipped controller tunables in
 // src/engine/controller.ts: maxRun 120, accel 800, jumpVel -260, gravity 900):
@@ -23,26 +23,55 @@
 //   - Teleporters create guaranteed edges between teleporter and destination
 //     tiles. Bidirectional pairs add reciprocal edges.
 //   - Moving platforms make both endpoint positions standable in the BFS grid.
-//   - Gravity zones flip jump/drop directions and standable-surface semantics
-//     within the covered region.
+//
+// Gravity zones are NOT modelled (issue #174): the shipped engine never
+// applies inversion (stepControllerWithGravity has no consumer; the
+// gravity-zone adapter publishes {}), so the validator models normal
+// gravity only. A level declaring a gravity-zone mechanic that the
+// normal-gravity BFS cannot solve lands 'not-modelled' with
+// 'gravity-zone' in `unmodeled`, never a false certificate.
 
 import { levelToGrid } from '../engine/levelAdapter';
-import { resolveMutations } from '../levels/mutations';
-import type { MutableLevelData } from '../levels/mutation-types';
 import type { JsonValue, LevelData, MechanicEntry } from '../levels/types';
 import { Tile } from '../levels/types';
 
-export interface ValidationResult {
-  reachable: boolean;
-  exitReachable: boolean;
-  variantResults: VariantResult[];
+/**
+ * Structured solvability verdict (issue #161 CP3).
+ *
+ *  - 'solvable': the BFS reached the exit through physically swept edges.
+ *  - 'unsolvable': the BFS failed and the level contains no unmodeled
+ *    traversal-relevant mechanics; the geometry alone cannot connect
+ *    spawn to exit.
+ *  - 'not-modelled': the BFS failed but the level declares mechanics or
+ *    traps the validator does not model and that can plausibly change
+ *    traversal (listed in `unmodeled`). The verdict is withheld rather
+ *    than guessed.
+ */
+export interface SolvabilityResult {
+  readonly reachable: boolean;
+  readonly status: 'solvable' | 'unsolvable' | 'not-modelled';
+  readonly unmodeled: readonly string[];
 }
 
-export interface VariantResult {
-  attempt: number;
-  reachable: boolean;
-  exitReachable: boolean;
-}
+/**
+ * Mechanic and trap types the validator does not model that can plausibly
+ * change traversal. Pure-hazard traps (spikes, emerging/retracting spikes,
+ * crushers, fake-ui, camera-troll, control-inversion) are deliberately
+ * absent: they alter survival, not geometry, and never buy a
+ * 'not-modelled' excuse.
+ *
+ * 'gravity-zone' is listed (issue #174): gravity inversion is an engine
+ * no-op, so the validator models normal gravity only and withholds the
+ * verdict on levels whose declared gravity zones could change traversal.
+ */
+const TRAVERSAL_UNMODELED_TYPES: ReadonlySet<string> = new Set([
+  'jetpack',
+  'fake-exit',
+  'lever',
+  'shifting-wall',
+  'vanishing-floor',
+  'gravity-zone',
+]);
 
 // ---------------------------------------------------------------------------
 // Physics constants (mirror src/engine/controller.ts)
@@ -65,31 +94,30 @@ const MAX_RISE = 2;
 // so the validator stays independent of the engine module's export graph.
 const CONTROLLER_GRAVITY = 900;
 
+// |JUMP_VEL| from src/engine/controller.ts; the swept arc launches with
+// this vertical speed (springs override it with their impulse).
+const NORMAL_JUMP_VEL_ABS = 260;
+
+// MAX_RUN from src/engine/controller.ts: the fastest horizontal speed the
+// controller can sustain. Arcs demanding more are physically unflyable.
+const CONTROLLER_MAX_RUN = 120;
+
+// ACCEL from src/engine/controller.ts: ground/air horizontal acceleration.
+const CONTROLLER_ACCEL = 800;
+
 // ---------------------------------------------------------------------------
-// Grid wrapper with optional standable overrides (moving platforms) and
-// gravity-zone awareness.
+// Grid wrapper with optional standable overrides (moving platforms).
 // ---------------------------------------------------------------------------
 
 /**
  * Internal grid representation that augments the base tile grid with:
  *  - extraStandable: cells made standable by moving platforms (both endpoints)
- *  - gravityZones: regions where jump/drop directions are inverted
  */
 interface ValidatorGrid {
   cols: number;
   rows: number;
   tiles: readonly Tile[];
   extraStandable: Set<string>;
-  gravityZones: GravityZone[];
-}
-
-interface GravityZone {
-  /** Inclusive top-left corner, in tile coords. */
-  colMin: number;
-  rowMin: number;
-  /** Exclusive bottom-right corner, in tile coords. */
-  colMax: number; // exclusive
-  rowMax: number; // exclusive
 }
 
 function gridKey(col: number, row: number): string {
@@ -116,8 +144,8 @@ function isPassable(tile: Tile | undefined): boolean {
  * If the cell is in the `extraStandable` set (placed by a moving platform),
  * it is considered standable regardless of the underlying tile.
  *
- * Inside a gravity zone, "beneath" becomes "above": the surface must be at
- * (col, row-1) instead of (col, row+1).
+ * Normal gravity only (issue #174): the shipped engine never inverts
+ * gravity, so the surface is always below.
  */
 function isStandable(
   grid: ValidatorGrid,
@@ -132,32 +160,9 @@ function isStandable(
   const here = grid.tiles[row * grid.cols + col];
   if (!isPassable(here)) return false;
 
-  const inverted = isInvertedRegion(grid, col, row);
-
-  if (!inverted) {
-    // Normal gravity: surface must be below.
-    if (row + 1 >= grid.rows) return false; // floor of the world
-    const below = grid.tiles[(row + 1) * grid.cols + col];
-    return below === Tile.Solid || below === Tile.OneWay;
-  } else {
-    // Inverted gravity: surface must be above.
-    if (row - 1 < 0) return false; // ceiling of the world
-    const above = grid.tiles[(row - 1) * grid.cols + col];
-    return above === Tile.Solid || above === Tile.OneWay;
-  }
-}
-
-/**
- * Returns true if (col, row) falls inside any gravity zone on the grid.
- */
-function isInvertedRegion(grid: ValidatorGrid, col: number, row: number): boolean {
-  for (const zone of grid.gravityZones) {
-    if (col >= zone.colMin && col < zone.colMax &&
-        row >= zone.rowMin && row < zone.rowMax) {
-      return true;
-    }
-  }
-  return false;
+  if (row + 1 >= grid.rows) return false; // floor of the world
+  const below = grid.tiles[(row + 1) * grid.cols + col];
+  return below === Tile.Solid || below === Tile.OneWay;
 }
 
 /**
@@ -172,22 +177,29 @@ function isInvertedRegion(grid: ValidatorGrid, col: number, row: number): boolea
  *    MAX_FLAT_GAP tiles of lateral drift scaled by the drop's horizontal
  *    allowance.
  *
- * The combined horizontal+vertical envelope for upward jumps is:
- *   |dc| / MAX_FLAT_GAP + rise / MAX_RISE <= 1
- * ensuring a max-rise jump (2 tiles up) permits little lateral travel, while
- * a flat jump (0 rise) permits the full MAX_FLAT_GAP.
+ * Rising-jump lateral allowances are KINEMATIC (issue #161): a jump that
+ * rises R tiles lands after t = (v + sqrt(v^2 - 2 g R')) / g seconds
+ * (descending root, v = 260, g = 900, R' = 16R px), during which the
+ * controller can cover MAX_RUN * t pixels horizontally:
+ *   rise 0: t = 0.578 s -> 4.3 tiles -> lat 4
+ *   rise 1: t = 0.508 s -> 3.8 tiles -> lat 3
+ *   rise 2: t = 0.400 s -> 3.0 tiles -> lat 3
+ * The old heuristic (|dc| / MAX_FLAT_GAP + rise / MAX_RISE <= 1) forbade
+ * ANY lateral travel on a 2-tile rise, which real physics disproves: the
+ * swept arc family plus the MAX_RUN cap now guards soundness, so the
+ * envelope only enumerates candidates.
  */
-function jumpNeighbors(): Array<{ dc: number; dr: number }> {
+export function jumpNeighbors(): Array<{ dc: number; dr: number }> {
   const neighbors: Array<{ dc: number; dr: number }> = [];
 
   // Walking: 1 tile left/right at the same row.
   neighbors.push({ dc: -1, dr: 0 });
   neighbors.push({ dc: 1, dr: 0 });
 
-  // Upward and level jumps: rise in [0..MAX_RISE], lateral in [-MAX_FLAT_GAP..MAX_FLAT_GAP],
-  // constrained by the combined envelope.
+  // Upward and level jumps: kinematic lateral allowance per rise.
+  const RISING_LAT: ReadonlyArray<number> = [MAX_FLAT_GAP, 3, 3];
   for (let rise = 0; rise <= MAX_RISE; rise++) {
-    const maxLat = Math.floor(MAX_FLAT_GAP * (1 - rise / MAX_RISE));
+    const maxLat = RISING_LAT[rise] ?? 0;
     for (let lat = -maxLat; lat <= maxLat; lat++) {
       if (lat === 0 && rise === 0) continue; // already covered by walking
       neighbors.push({ dc: lat, dr: -rise });
@@ -243,6 +255,344 @@ function springLaunchNeighbors(springRiseTiles: number): Array<{ dc: number; dr:
   return neighbors;
 }
 
+// ---------------------------------------------------------------------------
+// Swept-path obstruction (issue #161 CP1)
+//
+// The old validator only tested solids in the SOURCE COLUMN of upward jumps;
+// lateral jumps, walks, and drops crossed full-height walls unchecked. The
+// replacement sweeps EVERY edge through pixel space:
+//
+//   - Every jump-envelope edge is swept as the arc the real controller flies:
+//     takeoff with vertical velocity JUMP_VEL (-260; springs use their
+//     impulse), gravity 900, horizontal velocity solved so the body lands
+//     centered on the destination cell. The apex is
+//     260^2 / (2 * 900) = 37.6 px above the launch point. Sampled at a fixed
+//     quarter-step (240 samples/sec); each sample is the player AABB
+//     (16x16, cell-aligned, so half-extents of 8 px).
+//   - Downward edges (drops) additionally accept a walk-off composite:
+//     slide one cell toward the drift direction, free-fall the source
+//     column's neighbor, land, then walk the drift row (footing required
+//     beneath every drifted column). This models stepping off a ledge
+//     without jumping (and falling through one-way platforms, which never
+//     obstruct).
+//   - Walks are swept as a sliding 16x16 box translated one cell.
+//
+// Any sample intersecting a Solid rejects that motion. OneWay and Hazard
+// tiles never obstruct (passable from below/sides; hazards are geometrically
+// traversable). Pure arithmetic, fixed steps, no RNG (CLAUDE.md determinism).
+// ---------------------------------------------------------------------------
+
+const PLAYER_HALF_EXTENT = 8;
+const HALF_TILE = 8;
+/** Quarter of the fixed physics step: 240 sweep samples per second. */
+const SWEEP_DT = 1 / 240;
+/** Cap so pathological spring flights stay bounded. */
+const MAX_SWEEP_SAMPLES = 4000;
+
+/**
+ * True if the player-sized box centered at (cx, cy) overlaps any Solid
+ * tile. Out-of-bounds areas do not obstruct (edges are bounds-checked
+ * before the sweep runs).
+ */
+function sampleHitsSolid(
+  grid: ValidatorGrid,
+  cx: number,
+  cy: number,
+): boolean {
+  const minX = Math.floor((cx - PLAYER_HALF_EXTENT) / TILE_SIZE);
+  const maxX = Math.floor((cx + PLAYER_HALF_EXTENT - 1) / TILE_SIZE);
+  const minY = Math.floor((cy - PLAYER_HALF_EXTENT) / TILE_SIZE);
+  const maxY = Math.floor((cy + PLAYER_HALF_EXTENT - 1) / TILE_SIZE);
+  for (let r = minY; r <= maxY; r++) {
+    if (r < 0 || r >= grid.rows) continue;
+    for (let c = minX; c <= maxX; c++) {
+      if (c < 0 || c >= grid.cols) continue;
+      if (grid.tiles[r * grid.cols + c] === Tile.Solid) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Cheap bounding-box precheck: if no Solid tile intersects the inflated
+ * rectangle covering the whole swept path, the path is trivially clear.
+ */
+function regionHasSolid(
+  grid: ValidatorGrid,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): boolean {
+  const c0 = Math.floor(minX / TILE_SIZE);
+  const c1 = Math.floor(maxX / TILE_SIZE);
+  const r0 = Math.floor(minY / TILE_SIZE);
+  const r1 = Math.floor(maxY / TILE_SIZE);
+  for (let r = r0; r <= r1; r++) {
+    if (r < 0 || r >= grid.rows) continue;
+    for (let c = c0; c <= c1; c++) {
+      if (c < 0 || c >= grid.cols) continue;
+      if (grid.tiles[r * grid.cols + c] === Tile.Solid) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Sweeps one jump-envelope edge from (col,row) to (nc,nr).
+ *
+ * `jumpVelAbs` is the takeoff vertical speed (260 for a normal jump, the
+ * spring impulse on a spring tile). Returns true when at least one legal
+ * motion connects the two cells without clipping a Solid.
+ *
+ * Exported for direct unit testing of the sweep geometry.
+ */
+export function sweepEdge(
+  grid: ValidatorGrid,
+  col: number,
+  row: number,
+  nc: number,
+  nr: number,
+  jumpVelAbs: number,
+): boolean {
+  const sx = col * TILE_SIZE + HALF_TILE;
+  const sy = row * TILE_SIZE + HALF_TILE;
+  const ex = nc * TILE_SIZE + HALF_TILE;
+  const ey = nr * TILE_SIZE + HALF_TILE;
+
+  // Solidity test.
+  const hits = (x: number, y: number): boolean =>
+    sampleHitsSolid(grid, x, y);
+
+  // ---- Motion 1: the jumped arc family ------------------------------------
+  //
+  // y(t) = sy - v0 t + g/2 t^2 with takeoff speed v0. The landing time for
+  // y(t) = ey is the positive root of (g/2) t^2 - v0 t + (sy - ey) = 0:
+  //   t = (v0 + sqrt(v0^2 - 2 g (sy - ey))) / g
+  // which exists iff v0 >= v_min = sqrt(2 g (sy - ey)), the minimal arc
+  // that reaches the destination (apex exactly at the higher endpoint).
+  //
+  // The engine supports a RANGE of jump heights: holding jump flies the
+  // full impulse; tapping cuts it (release cut x0.5). We therefore sweep a
+  // small deterministic family of arcs and accept the edge when ANY of
+  // them flies clean:
+  //   v_min (grazing arc), 0.5x, 0.75x, and the full impulse.
+  // Low arcs certify tight-headroom hops; the full arc certifies hops over
+  // mid-path obstacles; a wall blocks every member of the family.
+  const dy = sy - ey;
+  const vMin = Math.sqrt(2 * CONTROLLER_GRAVITY * Math.max(dy, 0));
+
+  const candidates: number[] = [];
+  for (const f of [1, 0.75, 0.5]) {
+    const v = jumpVelAbs * f;
+    if (v >= vMin - 1e-9) candidates.push(v);
+  }
+  if (dy > 0) candidates.push(vMin);
+
+  for (const v0 of candidates) {
+    const disc = v0 * v0 - 2 * CONTROLLER_GRAVITY * dy;
+    if (disc < 0) continue;
+    const tLand = (v0 + Math.sqrt(disc)) / CONTROLLER_GRAVITY;
+    const vx = (ex - sx) / tLand;
+    // Physical feasibility: the controller cannot sustain more than
+    // MAX_RUN of horizontal speed in EITHER direction, and vx is signed
+    // (leftward arcs are negative), so the cap must test the magnitude.
+    // The unsigned comparison let leftward arcs bypass it entirely.
+    if (Math.abs(vx) > CONTROLLER_MAX_RUN) continue;
+    const apexY = sy - (v0 * v0) / (2 * CONTROLLER_GRAVITY);
+
+    // Bounding box precheck over the full arc.
+    if (
+      !regionHasSolid(
+        grid,
+        Math.min(sx, ex) - PLAYER_HALF_EXTENT,
+        Math.min(apexY, sy, ey) - PLAYER_HALF_EXTENT,
+        Math.max(sx, ex) + PLAYER_HALF_EXTENT,
+        Math.max(sy, ey) + PLAYER_HALF_EXTENT,
+      )
+    ) {
+      return true;
+    }
+
+    const samples = Math.min(
+      MAX_SWEEP_SAMPLES,
+      Math.max(8, Math.ceil(tLand / SWEEP_DT)),
+    );
+    let arcOk = true;
+    for (let i = 0; i <= samples; i++) {
+      const t = (tLand * i) / samples;
+      const x = sx + vx * t;
+      const y = sy - v0 * t + (CONTROLLER_GRAVITY / 2) * t * t;
+      if (hits(x, y)) {
+        arcOk = false;
+        break;
+      }
+    }
+    if (arcOk) return true;
+  }
+
+  // ---- Motion 2 (effective-rising edges): the apex-drift detour ------------
+  // The engine supports rising with a ceiling bonk (vy arrests, horizontal
+  // velocity is preserved and the player slides) and drifting at apex
+  // altitude. Model both as: rise straight up the source column to the
+  // destination altitude, then traverse horizontally at that altitude.
+  // Available only when the rise is within the takeoff impulse's apex
+  // (v0^2 / 2g); a wall blocks the traverse, a low ceiling blocks the
+  // rise, and the plain arc family already covers unobstructed jumps.
+  //
+  // The traverse is bounded by the time the jump spends at or above the
+  // destination altitude: the interval between crossing that altitude
+  // upward and dropping back below it. Only the distance coverable in
+  // that window (accelerating from rest to MAX_RUN) qualifies; beyond
+  // that the detour would glide, which jump dynamics cannot sustain.
+  if (nr < row && (row - nr) * TILE_SIZE <= (jumpVelAbs * jumpVelAbs) / (2 * CONTROLLER_GRAVITY)) {
+    const risePx = (row - nr) * TILE_SIZE;
+    // Time from the destination altitude to the apex and back down to it.
+    const vAtAlt = Math.sqrt(jumpVelAbs * jumpVelAbs - 2 * CONTROLLER_GRAVITY * risePx);
+    const tAbove = (2 * vAtAlt) / CONTROLLER_GRAVITY;
+    // Deliberately conservative: accelerating from rest understates a
+    // running jump's reach (the player arrives at this altitude already
+    // carrying horizontal speed). The shortfall only risks false-blocking,
+    // never false-certification, which is the safe direction.
+    // Generous horizontal reach while at/above the altitude: accelerate
+    // from rest to MAX_RUN for the whole window.
+    const tToMax = CONTROLLER_MAX_RUN / CONTROLLER_ACCEL;
+    const reach =
+      tAbove <= tToMax
+        ? 0.5 * CONTROLLER_ACCEL * tAbove * tAbove
+        : 0.5 * CONTROLLER_ACCEL * tToMax * tToMax +
+          CONTROLLER_MAX_RUN * (tAbove - tToMax);
+    if (Math.abs(ex - sx) <= reach) {
+      // Leg A: vertical rise in the source column. The launch sample is
+      // skipped: the standing box legitimately overlaps its own support tile.
+      const riseSpan = sy - ey;
+      const riseSamples = Math.max(2, Math.ceil(riseSpan / 2));
+      let riseOk = true;
+      for (let i = 1; i <= riseSamples; i++) {
+        const y = sy - riseSpan * (i / riseSamples);
+        if (hits(sx, y)) {
+          riseOk = false;
+          break;
+        }
+      }
+      // Leg B: horizontal traverse at the destination altitude.
+      if (riseOk) {
+        if (ex !== sx) {
+          const travSamples = Math.max(2, Math.abs(nc - col) * 8);
+          for (let i = 0; i <= travSamples; i++) {
+            const x = sx + (ex - sx) * (i / travSamples);
+            if (hits(x, ey)) {
+              riseOk = false;
+              break;
+            }
+          }
+        }
+      }
+      if (riseOk) return true;
+    }
+  }
+
+  // ---- Motion 3 (downward edges only): the walk-off composite -------------
+  // Slide one cell toward the drift direction, free-fall that column, LAND,
+  // then walk the drift row to the destination column. Models stepping off
+  // a ledge without jumping; also the only way to descend through a
+  // one-way platform under a low ceiling.
+  //
+  // Soundness (#161 fix round): the post-fall drift is a GROUNDED walk, so
+  // every column of the drift row, from the fall column through the
+  // destination, must provide standable footing beneath it. The previous
+  // formulation drifted at the landing altitude with no footing requirement
+  // and short-circuited through a composite bounding-box precheck that
+  // accepted any merely solid-free region, certifying unbounded mid-air
+  // glides across chasms the real controller cannot cross (ballistic drift
+  // on a shallow fall is bounded by MAX_RUN times the fall time, far short
+  // of what the old drift allowed).
+  if (nr > row) {
+    const dir = Math.sign(nc - col);
+    const fallCol = dir === 0 ? col : col + dir;
+    const fcx = fallCol * TILE_SIZE + HALF_TILE;
+
+    // Local verdict flag, matching the Motions 1-2 style: a failed phase
+    // rejects THIS composite, not the whole edge evaluation. (An early
+    // return here would be accidentally equivalent only because Motion 3
+    // is the last motion tried.)
+    let compositeOk = true;
+
+    // Phase 0: footing along the drift row. The fall must land on a
+    // surface in the fall column, and the drift to the destination is a
+    // walk, so every intervening column needs a floor too. isStandable
+    // handles one-way surfaces and moving-platform overrides; a missing
+    // floor anywhere in the span rejects the edge.
+    const driftLo = Math.min(fallCol, nc);
+    const driftHi = Math.max(fallCol, nc);
+    for (let cc = driftLo; cc <= driftHi && compositeOk; cc++) {
+      if (!isStandable(grid, cc, nr)) compositeOk = false;
+    }
+
+    // Phase A: slide one cell at the source height.
+    if (compositeOk) {
+      const slideSamples = 8;
+      for (let i = 0; i <= slideSamples && compositeOk; i++) {
+        const x = sx + (fcx - sx) * (i / slideSamples);
+        if (hits(x, sy)) compositeOk = false;
+      }
+    }
+
+    // Phase B: free fall down the fall column.
+    if (compositeOk) {
+      const fallSpan = ey - sy;
+      const fallSamples = Math.max(2, Math.ceil(fallSpan / 1.6));
+      for (let i = 0; i <= fallSamples && compositeOk; i++) {
+        const y = sy + fallSpan * (i / fallSamples);
+        if (hits(fcx, y)) compositeOk = false;
+      }
+    }
+
+    // Phase C: drift at the landing height to the destination column.
+    if (compositeOk && fcx !== ex) {
+      const driftSamples = Math.abs(nc - fallCol) * 8;
+      for (let i = 0; i <= driftSamples && compositeOk; i++) {
+        const x = fcx + (ex - fcx) * (i / driftSamples);
+        if (hits(x, ey)) compositeOk = false;
+      }
+    }
+    if (compositeOk) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Sweeps a one-cell walk from (col,row) to (nc,row) as a sliding 16x16 box.
+ * Walking is a horizontal translation at ground level.
+ */
+function walkPathClear(
+  grid: ValidatorGrid,
+  col: number,
+  row: number,
+  nc: number,
+): boolean {
+  const y = row * TILE_SIZE + HALF_TILE;
+  if (
+    !regionHasSolid(
+      grid,
+      Math.min(col, nc) * TILE_SIZE,
+      y - PLAYER_HALF_EXTENT,
+      Math.max(col, nc) * TILE_SIZE + TILE_SIZE,
+      y + PLAYER_HALF_EXTENT,
+    )
+  ) {
+    return true;
+  }
+  const steps = 8;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = col * TILE_SIZE + HALF_TILE + (nc - col) * TILE_SIZE * t;
+    if (sampleHitsSolid(grid, x, y)) return false;
+  }
+  return true;
+}
+
 const NEIGHBORS = jumpNeighbors();
 
 // ---------------------------------------------------------------------------
@@ -278,6 +628,8 @@ interface SpringInfo {
   row: number;
   /** Effective rise in tiles computed from |impulseY|. */
   riseTiles: number;
+  /** Raw |impulseY| for the swept arc. */
+  impulseAbs: number;
 }
 
 interface TeleporterInfo {
@@ -299,18 +651,10 @@ interface MovingTerrainInfo {
   bRow: number;
 }
 
-interface GravityZoneInfo {
-  colMin: number;
-  rowMin: number;
-  colMax: number;
-  rowMax: number;
-}
-
 interface ExtractedMechanics {
   springs: SpringInfo[];
   teleporters: TeleporterInfo[];
   movingTerrain: MovingTerrainInfo[];
-  gravityZones: GravityZoneInfo[];
 }
 
 /**
@@ -333,14 +677,16 @@ function computeSpringRiseTiles(impulseY: number): number {
 /**
  * Extracts mechanics info from the level's optional `mechanics` array.
  * Unknown mechanic types are silently skipped—the validator only models
- * mechanics that affect pathfinding geometry.
+ * mechanics that affect pathfinding geometry. Gravity zones are among the
+ * skipped types (issue #174): inversion is an engine no-op, so the BFS
+ * models normal gravity only and the failed verdict is withheld as
+ * 'not-modelled' via TRAVERSAL_UNMODELED_TYPES instead.
  */
 function extractMechanics(level: LevelData): ExtractedMechanics {
   const result: ExtractedMechanics = {
     springs: [],
     teleporters: [],
     movingTerrain: [],
-    gravityZones: [],
   };
 
   const mechanics = level.mechanics;
@@ -357,11 +703,9 @@ function extractMechanics(level: LevelData): ExtractedMechanics {
       case 'moving-platform':
         extractMovingPlatform(entry, result);
         break;
-      case 'gravity-zone':
-        extractGravityZone(entry, result);
-        break;
       default:
-        // Unrecognized mechanic type — not pathfinding-relevant.
+        // Unrecognized (or unmodelled, e.g. gravity-zone) mechanic type —
+        // not pathfinding-modelled here.
         break;
     }
   }
@@ -379,6 +723,7 @@ function extractSpring(entry: MechanicEntry, result: ExtractedMechanics): void {
     col: pxToTile(x),
     row: pxToTile(y),
     riseTiles: computeSpringRiseTiles(impulseY),
+    impulseAbs: Math.abs(impulseY),
   });
 }
 
@@ -429,47 +774,11 @@ function extractMovingPlatform(entry: MechanicEntry, result: ExtractedMechanics)
   result.movingTerrain.push({ aCol, aRow, bCol, bRow });
 }
 
-function extractGravityZone(entry: MechanicEntry, result: ExtractedMechanics): void {
-  // Gravity zones are defined by rectangular regions in tile or pixel space.
-  // We accept either pixel coords (x, y, width, height) or tile coords
-  // (col, row, cols, rows). Pixel coords are the canonical form since
-  // mechanics operate in pixel space.
-  const x = numParam(entry.params, 'x');
-  const y = numParam(entry.params, 'y');
-  const width = numParam(entry.params, 'width');
-  const height = numParam(entry.params, 'height');
-
-  if (x !== undefined && y !== undefined &&
-      width !== undefined && height !== undefined) {
-    const colMin = pxToTile(x);
-    const rowMin = pxToTile(y);
-    const colMax = pxToTile(x + width);
-    const rowMax = pxToTile(y + height);
-    result.gravityZones.push({ colMin, rowMin, colMax, rowMax });
-    return;
-  }
-
-  // Fall back to tile-coord specification.
-  const col = numParam(entry.params, 'col');
-  const row = numParam(entry.params, 'row');
-  const cols = numParam(entry.params, 'cols');
-  const rows = numParam(entry.params, 'rows');
-  if (col !== undefined && row !== undefined &&
-      cols !== undefined && rows !== undefined) {
-    result.gravityZones.push({
-      colMin: col,
-      rowMin: row,
-      colMax: col + cols,
-      rowMax: row + rows,
-    });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Core BFS
 // ---------------------------------------------------------------------------
 
-export function validateReachability(level: LevelData): boolean {
+export function validateSolvability(level: LevelData): SolvabilityResult {
   // Physics-calibrated BFS: can the player walk/jump/drop from spawn to exit
   // using the real controller's jump envelope? One-way platforms are standable;
   // solids block; hazards are geometrically passable.
@@ -480,14 +789,50 @@ export function validateReachability(level: LevelData): boolean {
   // chaining jumps through mid-air tiles --- the player must land on something
   // before jumping again.
   //
-  // Mechanics (#129 cp7): springs, teleporters, moving platforms, and gravity
-  // zones augment the BFS graph. See extractMechanics for details.
+  // Mechanics (#129 cp7): springs, teleporters, and moving platforms
+  // augment the BFS graph. See extractMechanics for details. Gravity
+  // zones are not modelled (issue #174).
+  //
+  // Every edge is swept for solid obstruction (#161); see sweepEdge.
 
+  const reachable = bfsReachable(level);
+
+  if (reachable) {
+    return { reachable: true, status: 'solvable', unmodeled: [] };
+  }
+
+  // BFS failed: withhold the verdict when the level declares traversal-
+  // relevant mechanics the validator does not model.
+  const unmodeled: string[] = [];
+  for (const trap of level.traps) {
+    if (TRAVERSAL_UNMODELED_TYPES.has(trap.type)) unmodeled.push(trap.type);
+  }
+  for (const mech of level.mechanics ?? []) {
+    if (TRAVERSAL_UNMODELED_TYPES.has(mech.type)) unmodeled.push(mech.type);
+  }
+
+  if (unmodeled.length > 0) {
+    return { reachable: false, status: 'not-modelled', unmodeled };
+  }
+  return { reachable: false, status: 'unsolvable', unmodeled: [] };
+}
+
+/**
+ * Boolean thin-wrapper over {@link validateSolvability}.
+ */
+export function validateReachability(level: LevelData): boolean {
+  return validateSolvability(level).reachable;
+}
+
+/**
+ * The raw BFS flood-fill from spawn to exit. Returns true when the exit is
+ * reached through swept, physically feasible edges.
+ */
+export function bfsReachable(level: LevelData): boolean {
   const baseGrid = levelToGrid(level);
   const mech = extractMechanics(level);
 
-  // Build the validator grid with moving-platform standable overrides and
-  // gravity zones.
+  // Build the validator grid with moving-platform standable overrides.
   const extraStandable = new Set<string>();
   for (const mt of mech.movingTerrain) {
     extraStandable.add(gridKey(mt.aCol, mt.aRow));
@@ -499,15 +844,20 @@ export function validateReachability(level: LevelData): boolean {
     rows: baseGrid.rows,
     tiles: baseGrid.tiles,
     extraStandable,
-    gravityZones: mech.gravityZones,
   };
 
   // Pre-compute spring launch neighbor sets keyed by spring tile.
-  const springCache = new Map<string, Array<{ dc: number; dr: number }>>();
+  const springCache = new Map<
+    string,
+    { neighbors: Array<{ dc: number; dr: number }>; impulseAbs: number }
+  >();
   for (const sp of mech.springs) {
     const k = gridKey(sp.col, sp.row);
     if (!springCache.has(k)) {
-      springCache.set(k, springLaunchNeighbors(sp.riseTiles));
+      springCache.set(k, {
+        neighbors: springLaunchNeighbors(sp.riseTiles),
+        impulseAbs: sp.impulseAbs,
+      });
     }
   }
 
@@ -564,24 +914,20 @@ export function validateReachability(level: LevelData): boolean {
     if (col === level.exit.col && row === level.exit.row) return true;
 
     const posKey = gridKey(col, row);
-    const inverted = isInvertedRegion(grid, col, row);
 
     // Determine which neighbor set applies at this position.
     // Springs override the normal jump envelope if the player is on the
     // spring tile. Otherwise use the standard physics neighbors.
     let neighbors: Array<{ dc: number; dr: number }>;
+    let jumpVelAbs = NORMAL_JUMP_VEL_ABS;
 
     // Choose neighbor set: spring takes precedence if present.
-    const springNbrs = springCache.get(posKey);
-    if (springNbrs) {
-      neighbors = springNbrs;
+    const springAt = springCache.get(posKey);
+    if (springAt) {
+      neighbors = springAt.neighbors;
+      jumpVelAbs = springAt.impulseAbs;
     } else {
       neighbors = NEIGHBORS;
-    }
-
-    // Apply gravity inversion: flip dr signs within inverted regions.
-    if (inverted) {
-      neighbors = neighbors.map(({ dc, dr }) => ({ dc, dr: -dr }));
     }
 
     for (const { dc, dr } of neighbors) {
@@ -591,28 +937,28 @@ export function validateReachability(level: LevelData): boolean {
       if (visited.has(nKey)) continue;
       if (nc < 0 || nc >= grid.cols || nr < 0 || nr >= grid.rows) continue;
 
-      // Destination must be standable: the player has to land on a surface.
-      if (!isStandable(grid, nc, nr)) continue;
+      // Destination validity. Ordinary destinations must be standable:
+      // the player has to land on a surface before moving again. The
+      // EXIT cell is the exception: the engine completes the level the
+      // moment the player AABB overlaps the exit cell (scene.ts exit
+      // check), so a merely-passable exit reached by a swept edge
+      // suffices --- no footing beneath it is required. This matters for
+      // levels like w2/ceiling-walk whose exit hangs in the air in
+      // normal gravity and is touched mid-arc.
+      const isExitCell =
+        nc === level.exit.col && nr === level.exit.row;
+      const destinationValid =
+        (isExitCell && isPassable(grid.tiles[nr * grid.cols + nc])) ||
+        isStandable(grid, nc, nr);
+      if (!destinationValid) continue;
 
-      // Ceiling/floor obstruction check for upward (or inverted-downward) jumps.
-      // In normal gravity, dr < 0 means rising; in inverted gravity, the
-      // "rising" direction is dr > 0. We check for solids blocking the arc
-      // in the direction of vertical travel.
-      const verticalTravel = inverted ? -dr : dr;
-      if (verticalTravel < 0) {
-        let blocked = false;
-        // Check tiles between source and destination in the source column.
-        const step = nr < row ? -1 : 1;
-        for (let r = row + step; ; r += step) {
-          if (r === nr) break;
-          if (r < 0 || r >= grid.rows) break;
-          const t = grid.tiles[r * grid.cols + col];
-          if (t === Tile.Solid) {
-            blocked = true;
-            break;
-          }
-        }
-        if (blocked) continue;
+      // Swept-path obstruction (issue #161): every edge must be physically
+      // flyable. Walks translate a player-sized box; jumps and drops sweep
+      // the controller's parabola (plus the walk-off composite for drops).
+      if (dr === 0 && Math.abs(dc) === 1) {
+        if (!walkPathClear(grid, col, row, nc)) continue;
+      } else if (!sweepEdge(grid, col, row, nc, nr, jumpVelAbs)) {
+        continue;
       }
 
       visited.add(nKey);
@@ -655,23 +1001,3 @@ export function validateReachability(level: LevelData): boolean {
   return false;
 }
 
-export function validateAllVariants(level: MutableLevelData, maxAttempts: number = 10): ValidationResult {
-  const variants: VariantResult[] = [];
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const variant = resolveMutations(level, attempt);
-    const reachable = validateReachability(variant);
-    variants.push({ attempt, reachable, exitReachable: reachable });
-
-    // Stop early if no mutations beyond this attempt
-    const hasMoreMutations = (level.mutations ?? []).some((m) => m.attempt > attempt);
-    if (!hasMoreMutations && attempt > 1) break;
-  }
-
-  const allReachable = variants.every((v) => v.reachable);
-  return {
-    reachable: allReachable,
-    exitReachable: allReachable,
-    variantResults: variants,
-  };
-}

@@ -132,6 +132,21 @@ describe('fake-exit levels remain completable', () => {
     expect(state.phase).toMatch(/entering|complete/);
   });
 
+  it('w2/17 ceiling-walk completes in normal gravity via the hopBot', () => {
+    // Engine-parity pin for the solvability gate's exit rule (issue #161
+    // review round): the gate certifies ceiling-walk solvable even though
+    // its exit hangs in the air, because the ENGINE completes the level
+    // on AABB overlap with the exit cell (no footing needed). This test
+    // proves that claim by execution: the gravity-zone mechanic is an
+    // engine no-op (issue #174), so the hopBot solves the level in
+    // normal gravity, bunny-hopping up the one-way ladder until a hop
+    // intersects the floating exit. If the engine's exit rule ever
+    // regresses to require standing, this goes red BEFORE the gate's
+    // certificate becomes a lie.
+    const { state } = play(WORLD2_LEVELS['ceiling-walk'], (s) => hopBot(s, true), 600);
+    expect(state.phase).toMatch(/entering|complete/);
+  });
+
   it('mvp/15 finale completes via the zig-zag ladder', () => {
     // Band map (one-way rows): r20/r16/r12/r8/r4 span cols 1-9 (west),
     // r18/r14/r6 span cols 10-18 (east), r10 spans cols 7-12. The vanishing

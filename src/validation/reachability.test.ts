@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateReachability } from './reachability';
+import { validateReachability, validateSolvability } from './reachability';
 import { loadLevel } from '../levels/load';
 import { FIXTURE_SOURCES } from '../levels/fixtures';
 
@@ -19,22 +19,49 @@ describe('reachability validation (physics-calibrated)', () => {
     expect(validateReachability(level)).toBe(true);
   });
 
-  it('walled-off exit is not reachable', () => {
+  it('walled-off exit is not reachable (standable spawn AND standable exit)', () => {
+    // The original walled-off fixture spawned at (0,1) where tile '1' is
+    // solid, so isStandable was false and the validator returned false
+    // vacuously. The first rewrite fixed the spawn but sat the EXIT on a
+    // Solid tile, so destination-standability rejected before any edge
+    // was swept, which was equally vacuous w.r.t. obstruction checking (AC-2).
+    //
+    // This version makes BOTH endpoints standable and seals the exit
+    // chamber with a wall column that runs the full interior height
+    // (touching the ceiling above and the floor below), so no walk, jump,
+    // or drop can cross it: every candidate edge toward the right chamber
+    // is enumerated, swept, and rejected by the wall. Gutting the sweep
+    // turns this test red (verified during the fix round), proving it
+    // genuinely exercises obstruction checking.
     const veryBlocked = loadLevel({
       name: 'very-blocked',
-      cols: 10, rows: 3,
-      spawn: { col: 0, row: 1 },
-      exit: { col: 9, row: 1 },
-      tiles: ['1111111111', '1011111001', '1111111111'],
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000100001',
+        '1000100001',
+        '1111111111',
+      ],
       traps: [],
     });
     expect(validateReachability(veryBlocked)).toBe(false);
   });
 
-  it('OLD shaft geometry (non-overlapping ledges, 2-col gap) is NOT reachable', () => {
-    // Reproduce the original buggy shaft: left ledges cols 1-8, right ledges
-    // cols 11-18. The 2-tile horizontal gap between alternating tiers exceeds
-    // the jump envelope, so the validator must reject it.
+  it('OLD shaft geometry (non-overlapping ledges, wide gap) is NOT reachable', () => {
+    // Reproduce the original buggy shaft: left ledges cols 1-7, right
+    // ledges cols 11-18. The 3-tile horizontal gap between alternating
+    // tiers exceeds the kinematic jump envelope (a rise-2 jump allows at
+    // most 3 tiles of lateral travel, and the tiers are offset both
+    // horizontally and vertically), so the validator must reject it.
+    //
+    // The gap is 3 tiles (not the historical 2) because a 2-tile offset
+    // is inside the calibrated envelope: rise 2 with lat 3 is flyable at
+    // full run speed, so the old fixture was quietly reachable through
+    // the one-way zigzag once the exit-stop rule matched the engine (the
+    // engine completes on AABB overlap with the exit cell, and the old
+    // fixture's floating exit masked the whole route).
     const oldShaft = loadLevel({
       name: 'old-shaft',
       cols: 20, rows: 24,
@@ -45,23 +72,23 @@ describe('reachability validation (physics-calibrated)', () => {
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '11111111111111111111',
         '11111111111111111111',
@@ -476,30 +503,20 @@ describe('reachability with moving terrain', () => {
   });
 });
 
-describe('reachability with gravity inversion', () => {
-  it('gravity zone allows reaching exit via inverted surfaces', () => {
-    // Full-level gravity inversion. The ceiling acts as the floor.
-    // The player walks on ceiling-derived surfaces and uses "drops"
-    // (which go UP in inverted mode) to navigate.
-    //
-    //   cols: 10, rows: 8
-    //   Row 0: '1100000011' — ceiling with gap at cols 2-7
-    //   Row 1: '1222222221' — one-way ceiling for tunnel (surface above in inv.)
-    //   Row 2: '1000000001' — tunnel
-    //   Row 3: '1000000001' — tunnel
-    //   Row 4: '1111111111' — solid lower ceiling
-    //   Row 5: '1000000001' — lower walkway
-    //   Row 6: '1111111111' — floor
-    //   Row 7: '1111111111' — floor
-    //
-    // Full-level gravity zone: x=0, y=0, w=160, h=128.
-    //
-    // Spawn at (1, 1): above (1, 0) = solid → standable (inverted) ✓
-    // Exit at (8, 1): above (8, 0) = solid → standable (inverted) ✓
-    //
-    // Path: (1,1) → jump↓1 → (2,2) [above=(2,1)=OneWay ✓]
-    //   → walk → (7,2) [all above=OneWay ✓]
-    //   → drop↑1+dc=1 → (8,1) [above=(8,0)=solid ✓]
+describe('gravity zones are not modelled (issue #174)', () => {
+  // Gravity inversion is an engine no-op in the shipped build: the
+  // gravity-zone adapter publishes {} and stepControllerWithGravity has
+  // no consumer. The validator therefore models NORMAL gravity only and
+  // must never certify a route that relies on inverted traversal. A
+  // level declaring a gravity-zone mechanic that the normal-gravity BFS
+  // cannot solve lands 'not-modelled' with 'gravity-zone' in `unmodeled`.
+
+  it('former inversion fixture is NOT reachable in the normal-gravity model', () => {
+    // Full-level gravity zone over a ceiling-walking layout. Under the
+    // removed inversion model the player walked the one-way ceiling
+    // tunnel; in normal gravity the spawn at (1, 1) has no floor beneath
+    // it, so the level is vacuously unreachable no matter what the zone
+    // promises.
     const level = loadLevel({
       name: 'gravity-invert',
       cols: 10, rows: 8,
@@ -524,12 +541,17 @@ describe('reachability with gravity inversion', () => {
         },
       ],
     });
-    expect(validateReachability(level)).toBe(true);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    // The declared gravity zone withholds the verdict instead of a
+    // false certificate either way.
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('gravity-zone');
   });
 
   it('same level WITHOUT gravity zone is unreachable', () => {
-    // Without the zone, spawn at (1,1) is not standable (below = '0'),
-    // so the level is vacuously unreachable.
+    // Without the zone there is no unmodelled mechanic, so the failed
+    // flood-fill is a plain unsolvable verdict.
     const level = loadLevel({
       name: 'no-gravity-zone',
       cols: 10, rows: 8,
@@ -547,31 +569,18 @@ describe('reachability with gravity inversion', () => {
       ],
       traps: [],
     });
-    expect(validateReachability(level)).toBe(false);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('unsolvable');
+    expect(result.unmodeled).toEqual([]);
   });
 
-  it('partial gravity zone: normal gravity outside, inverted inside', () => {
-    // Left half is normal gravity, right half has a gravity zone.
-    // The player walks normally on the left, enters the zone, and
-    // continues on inverted surfaces.
-    //
-    //   cols: 10, rows: 6
-    //   Row 0: '1111111111' — full ceiling
-    //   Row 1: '1000000000'
-    //   Row 2: '1000011111' — solid at cols 5-9 (ceiling for inverted area)
-    //   Row 3: '1000000000'
-    //   Row 4: '1111100000' — floor left side only
-    //   Row 5: '1111111111' — solid floor
-    //
-    // Zone: cols 5-9, rows 0-4. Pixel: x=80, y=0, w=80, h=80.
-    //
-    // Spawn (1, 3): normal, below (1, 4) = solid ✓
-    // Exit (8, 1): inside zone, above (8, 0) = solid ✓ (inverted)
-    //
-    // Path: (1,3) → walk → (4,3) [normal, below=solid ✓]
-    //   → walk → (5,3) [inside zone, above (5,2)=solid ✓]
-    //   → walk → (8,3) [inside zone, above=solid ✓]
-    //   → drop↑2 → (8,1) [above (8,0)=solid ✓]
+  it('partial gravity zone grants no inverted traversal', () => {
+    // Left half normal, right half zoned. The exit corridor hangs from
+    // the ceiling and is only enterable upside-down; in normal gravity
+    // the row-2 slab seals it (the hatch leads nowhere without upward
+    // falls), so the BFS must fail and the verdict must be withheld
+    // because of the declared zone.
     const level = loadLevel({
       name: 'partial-gravity',
       cols: 10, rows: 6,
@@ -580,7 +589,7 @@ describe('reachability with gravity inversion', () => {
       tiles: [
         '1111111111',
         '1000000000',
-        '1000011111',
+        '1000010111',
         '1000000000',
         '1111100000',
         '1111111111',
@@ -594,24 +603,21 @@ describe('reachability with gravity inversion', () => {
         },
       ],
     });
-    expect(validateReachability(level)).toBe(true);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('gravity-zone');
   });
 
   it('partial gravity zone WITHOUT the zone is unreachable', () => {
-    // Without the zone, the right side has no floor (row 4 cols 5-9 empty)
-    // and the exit at (8, 1) has no surface below (row 2 col 8 = solid,
-    // but in NORMAL gravity, standable requires surface BELOW, which is
-    // row 2 = solid → actually standable!). Let me check:
-    // (8, 1): passable (Empty) ✓. Below (8, 2) = solid → standable ✓!
-    // So the exit IS standable without the zone. But can the player reach it?
-    // (1, 3) → walk → (4, 3) [below (4, 4) = solid ✓]
-    // (5, 3): below (5, 4) = '0' → not standable. Gap in floor.
-    // Can the player jump from (4, 3) to (8, 1)? dc=4, rise=2.
-    // Envelope: 4/4 + 2/2 = 2 > 1 → NO.
-    // Jump from (4, 3) to (8, 3)? dc=4, dr=0. Flat jump 4 tiles = MAX_FLAT_GAP.
-    // (8, 3): below (8, 4) = '0' → not standable. ✗
-    // Jump from (4, 3) to (6, 1)? dc=2, rise=2. Envelope: 2/4 + 2/2 = 1.5 > 1. ✗
-    // So without the zone, unreachable ✓.
+    // Same hatched geometry but no gravity zone: no unmodelled mechanic,
+    // so the failed flood-fill is a plain unsolvable verdict. The exit
+    // at (8, 1) has no surface below in normal gravity (row 2 col 8 =
+    // solid ABOVE it, not below), and nothing lifts the player to the
+    // row-1 corridor: the right side has no floor (row 4 cols 5-9
+    // empty), the row-1 cells sit under a solid ceiling, and every jump
+    // envelope into row 1 clips the row-2 slab or the ceiling. Verified
+    // unreachable.
     const level = loadLevel({
       name: 'partial-no-zone',
       cols: 10, rows: 6,
@@ -620,13 +626,204 @@ describe('reachability with gravity inversion', () => {
       tiles: [
         '1111111111',
         '1000000000',
-        '1000011111',
+        '1000010111',
         '1000000000',
         '1111100000',
         '1111111111',
       ],
       traps: [],
     });
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('unsolvable');
+    expect(result.unmodeled).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Swept-path obstruction regressions (issue #161 CP2)
+//
+// The pre-sweep validator only checked solids in the source column of
+// upward jumps. These cases pin the classes of edge it waved through:
+// lateral jumps through walls, drops through overhangs, walks through
+// walls, plus positive controls proving the sweep still certifies
+// ordinary arcs.
+// ---------------------------------------------------------------------------
+
+describe('swept-path obstruction regressions (#161)', () => {
+  it('lateral jump through a full-height wall is NOT reachable', () => {
+    // Two chambers separated by a full-height wall block (rows 0-1 solid,
+    // wall column sealing row 2). Same floor row, so the exit is a flat
+    // lateral jump away (well inside the envelope), but every arc from
+    // row 2 rises into the solid ceiling and no walk crosses the wall.
+    // The pre-sweep validator accepted the flat jump and called this
+    // reachable.
+    const level = loadLevel({
+      name: 'wall-between',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1111111111',
+        '1000000101',
+        '1111111111',
+      ],
+      traps: [],
+    });
     expect(validateReachability(level)).toBe(false);
+  });
+
+  it('drop onto a ledge THROUGH a solid overhang is NOT reachable', () => {
+    // The exit sits on a ledge sheltered by a solid overhang (row 3,
+    // cols 4-9). From the spawn plateau (row 2, cols 0-3) the only
+    // envelope route down is a drop with lateral drift, and every such
+    // fall clips the overhang. The pre-sweep validator never checked
+    // drops for solids and called this reachable.
+    //
+    //   Row 0: ceiling
+    //   Row 1: open; spawn (1,1) stands on the plateau
+    //   Row 2: plateau cols 0-3 solid; overhang top cols 4-8 standable
+    //   Row 3: OVERHANG cols 4-9 solid
+    //   Row 4: open under the overhang; exit (7,4)
+    //   Row 5: ledge cols 4-9 solid
+    //   Row 6: floor
+    const level = loadLevel({
+      name: 'overhang-drop',
+      cols: 10, rows: 7,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 7, row: 4 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1111000001',
+        '0000111111',
+        '0000000000',
+        '0000111111',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('walk-off drift across an unfloored chasm is NOT reachable (composite soundness)', () => {
+    // Regression for the Motion-3 soundness hole (#161 fix round): the
+    // walk-off composite drifted horizontally at the landing altitude with
+    // no footing requirement beneath the drift row, and its bounding-box
+    // precheck accepted any merely solid-free region. Counterexample:
+    // 14x9, flush ceiling (row 0 solid) killing every jump arc, spawn
+    // ledge cols 0-3 (top at row 2), a 3-tile moat (cols 4-6, 5 deep),
+    // and a 5-tile-tall pedestal (cols 7-10) with the exit on top at (8,3).
+    //
+    // The only envelope edge toward the exit is the 1-row walk-off drop
+    // from (3,2) to the pedestal top (7,3): ballistic drift on a 1-row
+    // fall is bounded by MAX_RUN * t_fall (~23 px), roughly 40 px short
+    // of the pedestal, so the real player lands in the moat instead. The
+    // moat walls and the pedestal are a 5-tile rise, beyond the 2.35-tile
+    // jump apex, so there is no second chance. Physically unsolvable; the
+    // composite must not certify the drift across the unfloored moat.
+    const level = loadLevel({
+      name: 'chasm-drift',
+      cols: 14, rows: 9,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 3 },
+      tiles: [
+        '11111111111111', // row 0: flush ceiling, kills every jump arc
+        '10000000000001', // row 1
+        '10000000000001', // row 2: spawn ledge top (cols 0-3 standable)
+        '11110000000001', // row 3: ledge block, moat mouth, pedestal air
+        '11110001111001', // row 4: pedestal cols 7-10 (top surface)
+        '11110001111001', // row 5
+        '11110001111001', // row 6
+        '11110001111001', // row 7: moat bottom (stands on row 8)
+        '11111111111111', // row 8: floor
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('walk blocked by a 1-tile wall is NOT reachable', () => {
+    // Flat corridor whose open row is exactly one tile high: a waist-high
+    // solid at col 4 blocks walking, and the sealed headroom (rows 0-1
+    // solid) leaves no room to arc over it. The pre-sweep validator leapt
+    // the wall with an unchecked flat jump and called this reachable.
+    const level = loadLevel({
+      name: 'waist-wall',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1111111111',
+        '1000100001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('positive control: arc over a 1-tile obstacle succeeds', () => {
+    // Same corridor as the waist-wall case but with headroom: the ceiling
+    // is two rows above the floor, leaving space to arc over the single
+    // obstacle tile. The sweep must certify this hop.
+    const level = loadLevel({
+      name: 'hop-over',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1000100001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(true);
+  });
+
+  it('positive control: plain flat jump across a gap succeeds', () => {
+    // A 3-tile gap in the floor at the same row: squarely inside the
+    // 4-tile envelope, no obstructions. Must stay reachable.
+    const level = loadLevel({
+      name: 'plain-gap',
+      cols: 10, rows: 4,
+      spawn: { col: 2, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1001110001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(true);
+  });
+
+  it('positive control: drop down a clear shaft with drift succeeds', () => {
+    // Spawn on an upper ledge, exit on the floor below and 3 columns
+    // across, with open air the whole way. The walked-off composite must
+    // certify it.
+    const level = loadLevel({
+      name: 'clear-drop',
+      cols: 10, rows: 7,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 5, row: 5 },
+      tiles: [
+        '1111111111',
+        '1000000000',
+        '1111100000',
+        '1000000000',
+        '1000000000',
+        '1000000000',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(true);
   });
 });
