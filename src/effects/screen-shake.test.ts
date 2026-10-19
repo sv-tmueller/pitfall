@@ -47,10 +47,6 @@ describe('screen-shake', () => {
     }
     const distinct = new Set(dirs.map((d) => `${d.x},${d.y}`));
     expect(distinct.size).toBeGreaterThan(1);
-
-    // Even stronger: hold the magnitude artificially constant and confirm
-    // successive angles differ (proves the seed, not the magnitude, drives
-    // direction).
     let held = createShake(7, 1);
     held = triggerShake(held, 8);
     const a1 = stepShake(held, 0);
@@ -61,8 +57,6 @@ describe('screen-shake', () => {
   });
 
   it('decays proportionally to dt', () => {
-    let s = createShake(42, 1);
-    s = triggerShake(s, 8);
     // Half-rate dt halves the decay per call: 90/s * dt.
     const fast = stepShake(triggerShake(createShake(1, 1), 8), DT);
     const slow = stepShake(triggerShake(createShake(1, 1), 8), DT / 2);
@@ -71,14 +65,16 @@ describe('screen-shake', () => {
   });
 
   it('normalizes negative zero offsets', () => {
-    // A straight-down angle (sin = -1) makes cos exactly +-0 territory;
-    // whatever the sign of the raw round, the stored offset must not be -0.
     let s = createShake(42, 1);
     s = triggerShake(s, 8);
+    const offsets: Array<[number, number]> = [];
     for (let i = 0; i < 20; i++) {
       s = stepShake(s, DT);
-      expect(Object.is(s.offsetX, -0)).toBe(false);
-      expect(Object.is(s.offsetY, -0)).toBe(false);
+      offsets.push([s.offsetX, s.offsetY]);
+    }
+    for (const [x, y] of offsets) {
+      expect(Object.is(x, -0)).toBe(false);
+      expect(Object.is(y, -0)).toBe(false);
     }
   });
 

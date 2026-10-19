@@ -82,20 +82,30 @@ function manualTicker(): { ticker: Ticker; frame: (nowMs: number) => void; stopp
 }
 
 class FakeAdapter implements GameAdapter {
-  readonly created: { sources: readonly LevelSource[] }[] = [];
+  readonly created: {
+    sources: readonly LevelSource[];
+    effectsIntensity: number | undefined;
+  }[] = [];
   readonly stepped: InputSnapshot[] = [];
   readonly rendered: number[] = [];
   callbacks: SceneCallbacks | null = null;
   deathsToAdd = 0;
 
   create(
-    opts: { readonly sources: readonly LevelSource[]; readonly atlas: LoadedAtlas },
+    opts: Parameters<GameAdapter['create']>[0],
     input: Parameters<GameAdapter['create']>[1],
     callbacks?: SceneCallbacks,
   ): GameState {
-    this.created.push({ sources: opts.sources });
+    this.created.push({
+      sources: opts.sources,
+      effectsIntensity: opts.effectsIntensity,
+    });
     this.callbacks = callbacks ?? null;
-    return createGame({ sources: opts.sources, atlas: opts.atlas }, input, callbacks);
+    return createGame(
+      { sources: opts.sources, atlas: opts.atlas, effectsIntensity: opts.effectsIntensity },
+      input,
+      callbacks,
+    );
   }
 
   step(state: GameState, dt: number): GameState {
@@ -397,6 +407,19 @@ describe('app shell', () => {
     const { app } = makeApp({ sources: [] });
     expect(app.screen).toBe('boot-error');
     expect(app.bootMessage).toContain('no levels available');
+  });
+
+  it('forwards effectsIntensity to the adapter create options', () => {
+    const { app, input, adapter } = makeApp({ effectsIntensity: 0 });
+    startPlaying(app, input);
+    expect(adapter.created).toHaveLength(1);
+    expect(adapter.created[0]!.effectsIntensity).toBe(0);
+  });
+
+  it('defaults effectsIntensity to undefined when unset', () => {
+    const { app, input, adapter } = makeApp();
+    startPlaying(app, input);
+    expect(adapter.created[0]!.effectsIntensity).toBeUndefined();
   });
 
   it('drives the loop through the injected ticker', () => {

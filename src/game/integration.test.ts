@@ -549,3 +549,154 @@ describe('renderGame camera from interpolated body', () => {
     expect(minX).toBe(startCol * 16 - expectedCamX);
   });
 });
+
+describe('effects wiring', () => {
+  it('fires death effects on any transition into dying (R-restart included)', () => {
+    const input = createFakeInput();
+    const game = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    const state = stepGame(game, DT);
+    input.keyUp('KeyR');
+
+    expect(state.scene.phase).toBe('dying');
+    expect(state.effects.particles.particles.length).toBeGreaterThan(0);
+    expect(state.effects.shake.magnitude).toBeGreaterThan(0);
+    expect(state.effects.hitStop.active).toBe(true);
+  });
+
+  it('freezes the sim during hit-stop and unfreezes after it expires', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+    expect(state.effects.hitStop.active).toBe(true);
+
+    // Frozen steps: the scene must not advance (timer, phase, body frozen).
+    const frozenScene = state.scene;
+    let frozenSteps = 0;
+    while (state.effects.hitStop.active) {
+      state = stepGame(state, DT);
+      frozenSteps++;
+      expect(state.scene.timer).toBe(frozenScene.timer);
+      expect(state.scene.step).toBe(frozenScene.step);
+      expect(state.scene.controller.body.x).toBe(frozenScene.controller.body.x);
+    }
+    // triggerHitStop(3) at intensity 1, but the arming death step already
+    // ran stepEffects (3 -> 2), so exactly 2 fully-frozen steps remain.
+    expect(frozenSteps).toBe(2);
+
+    // Freeze expired: the next step advances the scene normally. The body
+    // is mid-death-freeze, so the observable advance is the dying-phase
+    // timer ticking down again.
+    state = stepGame(state, DT);
+    expect(state.scene.timer).toBe(frozenScene.timer - 1);
+  });
+
+  it('consumes the primed input snapshot during a hit-stop freeze', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    // Die once to arm the freeze.
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+    expect(state.effects.hitStop.active).toBe(true);
+
+    // A jump pressed during the freeze is sampled (and thereby drained) by
+    // the frozen step even though no scene step runs: dropping the primed
+    // snapshot for that step is correct for a freeze.
+    input.keyDown('Space');
+    state = stepGame(state, DT);
+    expect(state.effects.hitStop.active).toBe(true);
+    expect(input.sample().pressed.jump).toBe(false);
+    input.keyUp('Space');
+  });
+
+  it('fires landing effects when the body transitions airborne to grounded', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    // Settle on the ground and let the initial spawn-drop dust die out.
+    // (The spawn fall is itself an airborne -> grounded transition and
+    // legitimately fires one landing burst.)
+    for (let i = 0; i < 60; i++) state = stepGame(state, DT);
+    expect(state.scene.controller.body.grounded).toBe(true);
+    expect(state.effects.particles.particles).toHaveLength(0);
+
+    // Jump, then fall back to the ground.
+    input.keyDown('Space');
+    state = stepGame(state, DT);
+    input.keyUp('Space');
+    expect(state.scene.controller.body.grounded).toBe(false);
+
+    let landed = false;
+    for (let i = 0; i < 60 && !landed; i++) {
+      state = stepGame(state, DT);
+      landed = state.scene.controller.body.grounded;
+    }
+    expect(landed).toBe(true);
+    // onLand spawned dust particles at the feet.
+    expect(state.effects.particles.particles.length).toBeGreaterThan(0);
+  });
+
+  it('reduced-motion intensity (0) produces zero-length effects everywhere', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS, effectsIntensity: 0 },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+
+    expect(state.scene.phase).toBe('dying');
+    expect(state.effects.particles.particles).toHaveLength(0);
+    expect(state.effects.shake.magnitude).toBe(0);
+    expect(state.effects.shake.offsetX).toBe(0);
+    expect(state.effects.shake.offsetY).toBe(0);
+    expect(state.effects.hitStop.active).toBe(false);
+
+    // Rendering with zero effects: the effects layer stays empty and the
+    // shake offset leaves the camera untouched.
+    const ctx = mockBlitContext();
+    expect(() => renderGame(state, ctx, 0.5)).not.toThrow();
+    expect(state.effects.particles.particles).toHaveLength(0);
+  });
+
+  it('passes live particles and shake offsets into the render frame', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+    expect(state.effects.particles.particles.length).toBeGreaterThan(0);
+
+    const ctx = mockBlitContext();
+    renderGame(state, ctx, 0.5);
+
+    // Particle fill-rects reached the canvas: at least the clear rect plus
+    // the death-burst rects are present.
+    const fills = ctx.calls.filter((c) => c.method === 'fillRect');
+    expect(fills.length).toBeGreaterThan(1);
+  });
+});
