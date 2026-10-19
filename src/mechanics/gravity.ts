@@ -1,10 +1,22 @@
 // Gravity inversion: flips the up-vector for the controller and collision.
-// Wrapper around stepController that negates gravity and jump when inverted.
+//
+// Inversion is now FIRST-CLASS in the controller (`stepController` takes a
+// signed `gravityDir`), so this module is a thin compatibility wrapper plus
+// the small transition-timer state the old adapter used. The previous
+// implementation stepped the controller in normal gravity and then negated
+// the resolved vy, which is physically wrong (it dropped the resolve of the
+// inverted motion entirely and left the body resolving against the wrong
+// surfaces). It now delegates to the signed controller.
 
-import { stepController, type ControllerActions, type ControllerState } from '../engine/controller';
+import {
+  stepController,
+  type ControllerActions,
+  type ControllerState,
+  type GravityDirection,
+} from '../engine/controller';
 import type { SolidRect, TileGrid } from '../engine/physics';
 
-export type GravityDirection = 1 | -1;
+export type { GravityDirection };
 
 export interface GravityState {
   direction: GravityDirection;
@@ -36,23 +48,6 @@ export function stepControllerWithGravity(
   gravityDir: GravityDirection,
   solids: readonly SolidRect[] = [],
 ): ControllerState {
-  if (gravityDir === 1) {
-    return stepController(state, actions, grid, dt, solids);
-  }
-  // Inverted: negate jump press (jump goes DOWN), swap up/down semantics
-  const invertedActions: ControllerActions = {
-    ...actions,
-    jumpPressed: actions.jumpPressed,
-    jumpHeld: actions.jumpHeld,
-  };
-  // Step normally, then flip the vertical velocity and position
-  const result = stepController(state, invertedActions, grid, dt, solids);
-  // Negate vy to simulate inverted gravity (the controller applied +gravity, we want -gravity)
-  return {
-    ...result,
-    body: {
-      ...result.body,
-      velocity: { ...result.body.velocity, y: -result.body.velocity.y },
-    },
-  };
+  // The controller owns the sign now; there is no separate inverted path.
+  return stepController(state, actions, grid, dt, solids, gravityDir);
 }

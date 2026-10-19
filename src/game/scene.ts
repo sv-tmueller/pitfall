@@ -320,12 +320,16 @@ function stepPlaying(
     dt,
   );
   const effectiveActions = overrides.actionsOverride ?? rawActions;
+  //    A gravity zone publishes `gravityDirection` (-1 inside, 1 outside);
+  //    absent a publishing mechanic the world is normal gravity.
+  const gravityDir = overrides.gravityDirection ?? 1;
   let controller = stepController(
     { ...state.controller, body: carriedBody },
     effectiveActions,
     grid,
     dt,
     activeSolids,
+    gravityDir,
   );
 
   // 3b. Apply the merged velocity modification (jetpack thrust) additively to

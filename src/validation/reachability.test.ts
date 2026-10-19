@@ -503,20 +503,19 @@ describe('reachability with moving terrain', () => {
   });
 });
 
-describe('gravity zones are not modelled (issue #174)', () => {
-  // Gravity inversion is an engine no-op in the shipped build: the
-  // gravity-zone adapter publishes {} and stepControllerWithGravity has
-  // no consumer. The validator therefore models NORMAL gravity only and
-  // must never certify a route that relies on inverted traversal. A
-  // level declaring a gravity-zone mechanic that the normal-gravity BFS
-  // cannot solve lands 'not-modelled' with 'gravity-zone' in `unmodeled`.
+describe('gravity zones ARE modelled (issue #174)', () => {
+  // Issue #174 restores the #129 inversion model now that the controller
+  // owns the gravity sign first-class (stepController takes gravityDir):
+  // inside a zone the standable surface is ABOVE and the jump/drop envelope
+  // mirrors, so the BFS certifies inverted traversal directly. A zone level
+  // that still fails the flood-fill is genuinely unsolvable geometry, never
+  // a withheld 'not-modelled' verdict.
 
-  it('former inversion fixture is NOT reachable in the normal-gravity model', () => {
-    // Full-level gravity zone over a ceiling-walking layout. Under the
-    // removed inversion model the player walked the one-way ceiling
-    // tunnel; in normal gravity the spawn at (1, 1) has no floor beneath
-    // it, so the level is vacuously unreachable no matter what the zone
-    // promises.
+  it('former inversion fixture IS certified solvable under the restored model', () => {
+    // Full-level gravity zone over a ceiling-walking layout. Inside the
+    // zone the player hangs from the row-1 one-way ceiling and walks it to
+    // the exit; zone-aware standability makes the row-1 cells standable
+    // (surface above) and the BFS certifies the route.
     const level = loadLevel({
       name: 'gravity-invert',
       cols: 10, rows: 8,
@@ -542,11 +541,9 @@ describe('gravity zones are not modelled (issue #174)', () => {
       ],
     });
     const result = validateSolvability(level);
-    expect(result.reachable).toBe(false);
-    // The declared gravity zone withholds the verdict instead of a
-    // false certificate either way.
-    expect(result.status).toBe('not-modelled');
-    expect(result.unmodeled).toContain('gravity-zone');
+    expect(result.reachable).toBe(true);
+    expect(result.status).toBe('solvable');
+    expect(result.unmodeled).toEqual([]);
   });
 
   it('same level WITHOUT gravity zone is unreachable', () => {
@@ -575,12 +572,11 @@ describe('gravity zones are not modelled (issue #174)', () => {
     expect(result.unmodeled).toEqual([]);
   });
 
-  it('partial gravity zone grants no inverted traversal', () => {
-    // Left half normal, right half zoned. The exit corridor hangs from
-    // the ceiling and is only enterable upside-down; in normal gravity
-    // the row-2 slab seals it (the hatch leads nowhere without upward
-    // falls), so the BFS must fail and the verdict must be withheld
-    // because of the declared zone.
+  it('partial gravity zone grants inverted traversal into the ceiling corridor', () => {
+    // Left half normal, right half zoned. The exit corridor hangs from the
+    // ceiling and is only enterable upside-down; the restored zone model
+    // makes the row-1 cells standable inside the zone, so the BFS certifies
+    // the route that normal gravity alone cannot solve.
     const level = loadLevel({
       name: 'partial-gravity',
       cols: 10, rows: 6,
@@ -604,9 +600,9 @@ describe('gravity zones are not modelled (issue #174)', () => {
       ],
     });
     const result = validateSolvability(level);
-    expect(result.reachable).toBe(false);
-    expect(result.status).toBe('not-modelled');
-    expect(result.unmodeled).toContain('gravity-zone');
+    expect(result.reachable).toBe(true);
+    expect(result.status).toBe('solvable');
+    expect(result.unmodeled).toEqual([]);
   });
 
   it('partial gravity zone WITHOUT the zone is unreachable', () => {

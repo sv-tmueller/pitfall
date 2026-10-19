@@ -5,6 +5,14 @@ export interface Vec2 {
   y: number;
 }
 
+/**
+ * Signed gravity: 1 = normal (gravity pulls toward +y, the player stands on
+ * surfaces below), -1 = inverted (gravity pulls toward -y, the player stands
+ * on surfaces above). Threaded through the controller and the collision
+ * solver so the same code flies a mirrored parabola when inverted.
+ */
+export type GravityDirection = 1 | -1;
+
 // x,y = top-left.
 export interface AABB {
   x: number;
@@ -155,9 +163,11 @@ function resolveY(
   grid: TileGrid,
   dt: number,
   solids: readonly SolidRect[],
+  gravityDir: GravityDirection,
 ): { y: number; vy: number; hitCeiling: boolean; grounded: boolean } {
   const vy = body.velocity.y;
   const originalBottom = body.y + body.height;
+  const originalTop = body.y;
   let y = body.y + vy * dt;
   let hitCeiling = false;
   let grounded = false;
@@ -166,7 +176,13 @@ function resolveY(
   const minCol = spanStart(body.x);
   const maxCol = spanEnd(body.x, body.width);
 
-  if (vy >= 0) {
+  // `towardGround` selects the branch that LANDS the body on a surface;
+  // its mirror branch is the head/tail bump. Normal gravity lands on the
+  // tile below (vy >= 0), inverted gravity lands on the tile above
+  // (vy <= 0) --- every face test below is mirrored accordingly.
+  const towardGround = gravityDir === 1 ? vy >= 0 : vy <= 0;
+
+  if (towardGround && gravityDir === 1) {
     const row = spanEnd(y, body.height);
     for (let col = minCol; col <= maxCol; col++) {
       const tile = tileAt(grid, col, row);
@@ -209,7 +225,33 @@ function resolveY(
         grounded = true;
       }
     }
-  } else {
+  } else if (towardGround) {
+    // Inverted gravity: land on the tile ABOVE. The tile's bottom face is
+    // the floor; a one-way tile is solid only from below (the body's top
+    // edge must have started at or below that face this step).
+    const row = spanStart(y);
+    for (let col = minCol; col <= maxCol; col++) {
+      const tile = tileAt(grid, col, row);
+      const tileBottom = (row + 1) * TILE_SIZE;
+      const isBlocking = tile === Tile.Solid || (tile === Tile.OneWay && originalTop >= tileBottom);
+      if (isBlocking) {
+        y = tileBottom;
+        resolvedVy = 0;
+        grounded = true;
+        break;
+      }
+    }
+    // Dynamic solids: land on the bottom face (mirror of the normal landing).
+    for (const solid of solids) {
+      if (!horizontalRangesOverlap(body, solid)) continue;
+      const stop = solid.y + solid.height;
+      if (originalTop >= stop && y < stop && stop > y) {
+        y = stop;
+        resolvedVy = 0;
+        grounded = true;
+      }
+    }
+  } else if (gravityDir === 1) {
     const row = spanStart(y);
     for (let col = minCol; col <= maxCol; col++) {
       if (tileAt(grid, col, row) === Tile.Solid) {
@@ -225,6 +267,29 @@ function resolveY(
       if (!horizontalRangesOverlap(body, solid)) continue;
       const stop = solid.y + solid.height;
       if (body.y >= stop && y < stop && stop > y) {
+        y = stop;
+        resolvedVy = 0;
+        hitCeiling = true;
+      }
+    }
+  } else {
+    // Inverted gravity, moving away from the inverted ground: the body's
+    // FOOT bumps the tile below (mirror of the normal head bump).
+    const row = spanEnd(y, body.height);
+    for (let col = minCol; col <= maxCol; col++) {
+      if (tileAt(grid, col, row) === Tile.Solid) {
+        y = row * TILE_SIZE - body.height;
+        resolvedVy = 0;
+        hitCeiling = true;
+        break;
+      }
+    }
+    // Dynamic solids: bump the foot on the top face, only for a body that
+    // started at or above that face.
+    for (const solid of solids) {
+      if (!horizontalRangesOverlap(body, solid)) continue;
+      const stop = solid.y - body.height;
+      if (originalBottom <= solid.y && y + body.height > solid.y && stop < y) {
         y = stop;
         resolvedVy = 0;
         hitCeiling = true;
@@ -255,6 +320,10 @@ export function aabbOverlap(a: AABB, b: AABB): boolean {
 // so a resting body reports grounded: false; callers must apply gravity
 // first (stepController guarantees vy >= 15).
 //
+// `gravityDir` selects the gravity sign: 1 (default) probes downward and
+// lands on surfaces below; -1 mirrors every face test so the body lands on
+// surfaces above and bumps the tile below.
+//
 // The optional solids list adds dynamic-solid blocking on top of the tile
 // grid: solid rectangles stop horizontal motion at their faces and act as
 // landable tops / head-bumpable undersides. The default empty array keeps
@@ -264,6 +333,7 @@ export function moveAndCollide(
   grid: TileGrid,
   dt: number,
   solids: readonly SolidRect[] = [],
+  gravityDir: GravityDirection = 1,
 ): CollisionResult {
   const xResult = resolveX(body, grid, dt, solids);
   const bodyAfterX: Body = {
@@ -272,7 +342,7 @@ export function moveAndCollide(
     velocity: { x: xResult.vx, y: body.velocity.y },
   };
 
-  const yResult = resolveY(bodyAfterX, grid, dt, solids);
+  const yResult = resolveY(bodyAfterX, grid, dt, solids, gravityDir);
   const resolvedBody: Body = {
     ...bodyAfterX,
     y: yResult.y,

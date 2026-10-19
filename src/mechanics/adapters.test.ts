@@ -207,10 +207,10 @@ describe('teleporter adapter', () => {
 // ---------------------------------------------------------------------------
 
 describe('gravity-zone adapter', () => {
-  it('steps without throwing', () => {
+  it('publishes gravityDirection 1 when the body is outside the zone', () => {
     const mech = createGravityZoneMechanic(makeEntry('gravity-zone', {}));
     const result = mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
-    expect(result).toEqual({});
+    expect(result).toEqual({ gravityDirection: 1 });
   });
 
   it('can be reset', () => {
@@ -218,7 +218,7 @@ describe('gravity-zone adapter', () => {
     mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
     mech.reset();
     const result = mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
-    expect(result).toEqual({});
+    expect(result).toEqual({ gravityDirection: 1 });
   });
 });
 

@@ -132,18 +132,50 @@ describe('fake-exit levels remain completable', () => {
     expect(state.phase).toMatch(/entering|complete/);
   });
 
-  it('w2/17 ceiling-walk completes in normal gravity via the hopBot', () => {
-    // Engine-parity pin for the solvability gate's exit rule (issue #161
-    // review round): the gate certifies ceiling-walk solvable even though
-    // its exit hangs in the air, because the ENGINE completes the level
-    // on AABB overlap with the exit cell (no footing needed). This test
-    // proves that claim by execution: the gravity-zone mechanic is an
-    // engine no-op (issue #174), so the hopBot solves the level in
-    // normal gravity, bunny-hopping up the one-way ladder until a hop
-    // intersects the floating exit. If the engine's exit rule ever
-    // regresses to require standing, this goes red BEFORE the gate's
-    // certificate becomes a lie.
-    const { state } = play(WORLD2_LEVELS['ceiling-walk'], (s) => hopBot(s, true), 600);
+  it('w2/17 ceiling-walk completes via gravity inversion (flip and ceiling glide)', () => {
+    // Issue #174 executable acceptance proof, evolving the old engine-parity
+    // pin: with gravity inversion actually wired, the level's designed route
+    // is playable end to end. The spawn sits on the floor OUTSIDE the zone
+    // (the zone spans y 16..144, the floor row is below it), so the body
+    // starts in normal gravity. Walk east to column 8 - a gap in the row-2
+    // solid band - and jump: the hop carries the body's top edge into the
+    // zone, gravity flips UPWARD mid-rise, and the body accelerates to the
+    // row-0 ceiling, landing inverted at row 1. Gliding east along the
+    // ceiling (no hops: a hop would drop the body back toward the spike
+    // columns) brings the AABB over the floating exit at (17,1) and the
+    // level completes on overlap. If inversion ever regresses to a no-op,
+    // the jump apexes short of the ceiling and this goes red.
+    let phase: 'floor' | 'ascent' | 'glide' = 'floor';
+    const policy = (s: SceneState): SceneActions => {
+      const body = s.controller.body;
+      const cx = body.x + body.width / 2;
+      if (phase === 'floor') {
+        if (Math.abs(cx - 136) <= 2 && body.grounded) {
+          phase = 'ascent';
+          return { left: false, right: false, jumpPressed: true, jumpHeld: true, restart: false };
+        }
+        return { left: cx > 136, right: cx < 136, jumpPressed: false, jumpHeld: false, restart: false };
+      }
+      if (phase === 'ascent') {
+        if (body.grounded) phase = 'glide';
+        return { left: false, right: false, jumpPressed: false, jumpHeld: true, restart: false };
+      }
+      return { left: false, right: true, jumpPressed: false, jumpHeld: false, restart: false };
+    };
+    const { state } = play(WORLD2_LEVELS['ceiling-walk'], policy, 600);
+    expect(state.phase).toMatch(/entering|complete/);
+  });
+
+  it('w2/18 gravitas completes via gravity-zone inversion (hopBot)', () => {
+    // Issue #174 executable acceptance proof: the gravity-zone adapter
+    // publishes `gravityDirection` (-1 while the body AABB overlaps the zone
+    // rectangle x16 y16 w288 h128, so the whole play area above the floor row
+    // is inverted) and scene.stepPlaying feeds it to the signed controller.
+    // The spawn sits on the floor in normal gravity; the first hop carries
+    // the body into the zone, the pull flips UPWARD, and the bot bunny-hops
+    // east along the row-3/row-6 one-way ceilings to the exit at (17,1).
+    // Deterministically driven, this completes end to end in ~170 steps.
+    const { state } = play(WORLD2_LEVELS.gravitas, (s) => hopBot(s, true), 1200);
     expect(state.phase).toMatch(/entering|complete/);
   });
 

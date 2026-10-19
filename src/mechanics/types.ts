@@ -8,7 +8,7 @@
 // Dependency direction: src/mechanics/ sits above src/engine/ and src/levels/
 // and may import from both. Neither engine nor levels may import from mechanics.
 
-import type { Body } from '../engine/physics';
+import type { Body, GravityDirection } from '../engine/physics';
 import type { ControllerActions } from '../engine/controller';
 import type { HazardRect } from '../engine/levelAdapter';
 import type { DynamicSolid } from '../traps/types';
@@ -39,6 +39,7 @@ export interface MechanicContext {
  *  - `bodyOverride`: last writer wins (teleporter overrides spring).
  *  - `velocityMod`: accumulated additively across mechanics.
  *  - `actionsOverride`: last writer wins (typically only one input modifier).
+ *  - `gravityDirection`: last writer wins (gravity zones in declaration order).
  *  - `dynamicSolids` / `hazardsToAdd`: concatenated into the published arrays.
  *  - `cosmeticState`: stored for the renderer; does not affect physics.
  */
@@ -46,6 +47,11 @@ export interface MechanicStepResult {
   readonly bodyOverride?: Body;
   readonly velocityMod?: { x?: number; y?: number };
   readonly actionsOverride?: ControllerActions;
+  /**
+   * Signed gravity the mechanic wants applied next step: -1 inside a
+   * gravity zone, 1 outside. Last writer wins.
+   */
+  readonly gravityDirection?: GravityDirection;
   readonly dynamicSolids?: DynamicSolid[];
   readonly hazardsToAdd?: HazardRect[];
   readonly cosmeticState?: CosmeticEffect;
@@ -73,11 +79,13 @@ export interface VelocityMod {
  *  - `bodyOverride`: last writer wins in declaration order.
  *  - `velocityMod`: accumulated additively across mechanics.
  *  - `actionsOverride`: last writer wins (typically only one input modifier).
+ *  - `gravityDirection`: last writer wins (gravity zones in declaration order).
  */
 export interface PublishedOverrides {
   readonly bodyOverride?: Body;
   readonly velocityMod: VelocityMod;
   readonly actionsOverride?: ControllerActions;
+  readonly gravityDirection?: GravityDirection;
 }
 
 // ---------------------------------------------------------------------------
