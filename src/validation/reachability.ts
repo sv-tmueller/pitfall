@@ -1,7 +1,7 @@
-// Level validation harness: reachability and solvability checks (#44).
+// Level validation harness: reachability and solvability checks (#44, #161).
 // BFS flood-fill from spawn through the tile grid using movement constraints
-// derived from the real controller physics. Checks every mutation variant,
-// not just the base level.
+// derived from the real controller physics, with every edge swept for solid
+// obstruction.
 //
 // Jump envelope (calibrated to the shipped controller tunables in
 // src/engine/controller.ts: maxRun 120, accel 800, jumpVel -260, gravity 900):
@@ -27,22 +27,41 @@
 //     within the covered region.
 
 import { levelToGrid } from '../engine/levelAdapter';
-import { resolveMutations } from '../levels/mutations';
-import type { MutableLevelData } from '../levels/mutation-types';
 import type { JsonValue, LevelData, MechanicEntry } from '../levels/types';
 import { Tile } from '../levels/types';
 
-export interface ValidationResult {
-  reachable: boolean;
-  exitReachable: boolean;
-  variantResults: VariantResult[];
+/**
+ * Structured solvability verdict (issue #161 CP3).
+ *
+ *  - 'solvable': the BFS reached the exit through physically swept edges.
+ *  - 'unsolvable': the BFS failed and the level contains no unmodeled
+ *    traversal-relevant mechanics; the geometry alone cannot connect
+ *    spawn to exit.
+ *  - 'not-modelled': the BFS failed but the level declares mechanics or
+ *    traps the validator does not model and that can plausibly change
+ *    traversal (listed in `unmodeled`). The verdict is withheld rather
+ *    than guessed.
+ */
+export interface SolvabilityResult {
+  readonly reachable: boolean;
+  readonly status: 'solvable' | 'unsolvable' | 'not-modelled';
+  readonly unmodeled: readonly string[];
 }
 
-export interface VariantResult {
-  attempt: number;
-  reachable: boolean;
-  exitReachable: boolean;
-}
+/**
+ * Mechanic and trap types the validator does not model that can plausibly
+ * change traversal. Pure-hazard traps (spikes, emerging/retracting spikes,
+ * crushers, fake-ui, camera-troll, control-inversion) are deliberately
+ * absent: they alter survival, not geometry, and never buy a
+ * 'not-modelled' excuse.
+ */
+const TRAVERSAL_UNMODELED_TYPES: ReadonlySet<string> = new Set([
+  'jetpack',
+  'fake-exit',
+  'lever',
+  'shifting-wall',
+  'vanishing-floor',
+]);
 
 // ---------------------------------------------------------------------------
 // Physics constants (mirror src/engine/controller.ts)
@@ -779,7 +798,7 @@ function extractGravityZone(entry: MechanicEntry, result: ExtractedMechanics): v
 // Core BFS
 // ---------------------------------------------------------------------------
 
-export function validateReachability(level: LevelData): boolean {
+export function validateSolvability(level: LevelData): SolvabilityResult {
   // Physics-calibrated BFS: can the player walk/jump/drop from spawn to exit
   // using the real controller's jump envelope? One-way platforms are standable;
   // solids block; hazards are geometrically passable.
@@ -792,7 +811,43 @@ export function validateReachability(level: LevelData): boolean {
   //
   // Mechanics (#129 cp7): springs, teleporters, moving platforms, and gravity
   // zones augment the BFS graph. See extractMechanics for details.
+  //
+  // Every edge is swept for solid obstruction (#161); see sweepEdge.
 
+  const reachable = bfsReachable(level);
+
+  if (reachable) {
+    return { reachable: true, status: 'solvable', unmodeled: [] };
+  }
+
+  // BFS failed: withhold the verdict when the level declares traversal-
+  // relevant mechanics the validator does not model.
+  const unmodeled: string[] = [];
+  for (const trap of level.traps) {
+    if (TRAVERSAL_UNMODELED_TYPES.has(trap.type)) unmodeled.push(trap.type);
+  }
+  for (const mech of level.mechanics ?? []) {
+    if (TRAVERSAL_UNMODELED_TYPES.has(mech.type)) unmodeled.push(mech.type);
+  }
+
+  if (unmodeled.length > 0) {
+    return { reachable: false, status: 'not-modelled', unmodeled };
+  }
+  return { reachable: false, status: 'unsolvable', unmodeled: [] };
+}
+
+/**
+ * Boolean thin-wrapper over {@link validateSolvability}.
+ */
+export function validateReachability(level: LevelData): boolean {
+  return validateSolvability(level).reachable;
+}
+
+/**
+ * The raw BFS flood-fill from spawn to exit. Returns true when the exit is
+ * reached through swept, physically feasible edges.
+ */
+function bfsReachable(level: LevelData): boolean {
   const baseGrid = levelToGrid(level);
   const mech = extractMechanics(level);
 
@@ -962,23 +1017,3 @@ export function validateReachability(level: LevelData): boolean {
   return false;
 }
 
-export function validateAllVariants(level: MutableLevelData, maxAttempts: number = 10): ValidationResult {
-  const variants: VariantResult[] = [];
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const variant = resolveMutations(level, attempt);
-    const reachable = validateReachability(variant);
-    variants.push({ attempt, reachable, exitReachable: reachable });
-
-    // Stop early if no mutations beyond this attempt
-    const hasMoreMutations = (level.mutations ?? []).some((m) => m.attempt > attempt);
-    if (!hasMoreMutations && attempt > 1) break;
-  }
-
-  const allReachable = variants.every((v) => v.reachable);
-  return {
-    reachable: allReachable,
-    exitReachable: allReachable,
-    variantResults: variants,
-  };
-}
