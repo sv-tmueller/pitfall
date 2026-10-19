@@ -313,8 +313,8 @@ export function createApp(options: AppOptions): App {
     const scene = game.scene;
     const absoluteIndex = offset + scene.sequence.index;
 
-    // Level-entry attempt: recorded before the death delta so a death on the
-    // entry frame lands on a payload that already has the level keyed.
+    // Level-entry attempt: kept adjacent to the index tracking so the
+    // ledger update and the persist stay in one coherent sequence.
     if (absoluteIndex !== lastAttemptedIndex) {
       lastAttemptedIndex = absoluteIndex;
       save = recordAttempt(save, levelKey(absoluteIndex));
