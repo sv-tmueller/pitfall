@@ -547,6 +547,36 @@ describe('app shell attempt stats', () => {
     expect(loadSave(storage).levels[levelKey(0)]?.attemptCount).toBe(1);
     expect(getAllStats(loadSave(storage)).totalAttempts).toBe(2);
   });
+
+  it('resets the attempt ledger when a replay starts at the same index', () => {
+    // Pins the lastAttemptedIndex reset in startCampaign: the end-screen
+    // replay path calls startCampaign('new') on the SAME app instance, and
+    // the replayed campaign starts at the same absolute index (0) the
+    // finished one last attempted. Without the reset the ledger still holds
+    // 0 from the previous campaign and the replay's first entry is skipped.
+    const { app, input, adapter } = makeApp();
+    startPlaying(app, input);
+    app.step(DT);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+
+    // Finish the campaign: the shell lands on the end screen.
+    adapter.callbacks?.onLevelComplete?.(0);
+    app.step(DT);
+    adapter.callbacks?.onSequenceComplete?.();
+    app.step(DT);
+    expect(app.screen).toBe('end');
+
+    // Replay from the end screen: same instance, same start index. The
+    // transition step is drained (like the title transition), and the
+    // replay clears the save (mode new), so the ledger restarts and the
+    // first entry records a fresh 1 - not a skipped undefined.
+    input.keyDown('Enter');
+    app.step(DT);
+    input.keyUp('Enter');
+    expect(app.screen).toBe('playing');
+    app.step(DT);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+  });
 });
 
 describe('app shell finished campaign', () => {
