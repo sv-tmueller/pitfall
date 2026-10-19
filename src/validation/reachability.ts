@@ -826,7 +826,7 @@ function computeSpringRiseTiles(impulseY: number): number {
 
 /**
  * Extracts mechanics info from the level's optional `mechanics` array.
- * Unknown mechanic types are silently skipped—the validator only models
+ * Unknown mechanic types are silently skipped: the validator only models
  * mechanics that affect pathfinding geometry. Gravity zones ARE extracted
  * (issue #174): the inversion model consumes them to mirror standability
  * and the jump/drop envelope inside their rectangles.
@@ -857,7 +857,7 @@ function extractMechanics(level: LevelData): ExtractedMechanics {
         extractGravityZone(entry, result);
         break;
       default:
-        // Unrecognized mechanic type — not pathfinding-relevant.
+        // Unrecognized mechanic type: not pathfinding-relevant.
         break;
     }
   }
@@ -1102,8 +1102,14 @@ export function bfsReachable(level: LevelData): boolean {
     let neighbors: Array<{ dc: number; dr: number }>;
     let jumpVelAbs = NORMAL_JUMP_VEL_ABS;
 
-    // Choose neighbor set: spring takes precedence if present.
-    const springAt = springCache.get(posKey);
+    // Choose neighbor set: spring takes precedence if present. Springs inside
+    // a gravity zone are exempt: the engine's spring impulse overwrites vy in
+    // absolute terms, independent of the gravity sign (applySpringImpulse),
+    // so the modelled rise, which assumes the launch fights normal gravity,
+    // does not describe flight once the pull is inverted. Falling back to the
+    // zone-mirrored jump envelope under-certifies reach rather than certifying
+    // a launch the engine cannot actually make.
+    const springAt = inverted ? undefined : springCache.get(posKey);
     if (springAt) {
       neighbors = springAt.neighbors;
       jumpVelAbs = springAt.impulseAbs;

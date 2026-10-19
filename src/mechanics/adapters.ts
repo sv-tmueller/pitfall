@@ -212,9 +212,10 @@ export function createTeleporterMechanic(entry: MechanicEntry): MechanicInstance
 //
 // A gravity zone is a static rectangle: the player's gravity is inverted
 // while their AABB overlaps it and normal otherwise. The adapter parses the
-// zone from params (pixel x/y/width/height; tile col/row/cols/rows as a
-// fallback), publishes `gravityDirection` every step (last writer wins in
-// the runtime), and holds no per-step state beyond the parsed rectangle.
+// zone from params (pixel x/y top-left plus width/height, the same dialect the
+// validator's extractGravityZone reads) and publishes `gravityDirection` every
+// step (last writer wins in the runtime). It holds no per-step state beyond
+// the parsed rectangle.
 
 import { aabbOverlap, type AABB } from '../engine/physics';
 
@@ -223,17 +224,10 @@ function parseZoneRect(entry: MechanicEntry): AABB | null {
   const y = optNumber(entry.params, 'y');
   const width = optNumber(entry.params, 'width');
   const height = optNumber(entry.params, 'height');
-  if (x !== undefined && y !== undefined && width !== undefined && height !== undefined) {
-    return { x, y, width, height };
+  if (x === undefined || y === undefined || width === undefined || height === undefined) {
+    return null;
   }
-  const col = optNumber(entry.params, 'col');
-  const row = optNumber(entry.params, 'row');
-  const cols = optNumber(entry.params, 'cols');
-  const rows = optNumber(entry.params, 'rows');
-  if (col !== undefined && row !== undefined && cols !== undefined && rows !== undefined) {
-    return { x: col * 16, y: row * 16, width: cols * 16, height: rows * 16 };
-  }
-  return null;
+  return { x, y, width, height };
 }
 
 export function createGravityZoneMechanic(entry: MechanicEntry): MechanicInstance {

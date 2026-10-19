@@ -195,12 +195,15 @@ describe('structured verdict taxonomy pins (#161)', () => {
     expect(result.unmodeled).toEqual([]);
   });
 
-  it('ceiling-walk stays certified solvable in the normal-gravity model', () => {
-    // The OTHER gravity-zone level must remain green: it is completable
-    // in normal gravity (verified by the hopBot simulation at step 198).
-    // Its exit hangs in the air, so certification relies on the
-    // engine-faithful exit rule (completion = AABB overlap with the exit
-    // cell), reached from the standable one-way ladder below it.
+  it('ceiling-walk certifies solvable via gravity inversion (#174)', () => {
+    // The model is zone-aware now: ceiling-walk owns a gravity-zone, so the
+    // validator mirrors standability and the jump/drop envelope inside it and
+    // the level completes VIA inversion (the ceiling becomes the floor).
+    // Without that inverted branch the flood-fill stalls, so a green verdict
+    // here is evidence the inversion path is wired, not that the level
+    // happens to work in normal gravity. Its exit hangs in the air, so
+    // certification also relies on the engine-faithful exit rule (completion
+    // = AABB overlap with the exit cell).
     const result = validateSolvability(loadLevel(WORLD2_LEVELS['ceiling-walk']));
     expect(result.reachable).toBe(true);
     expect(result.status).toBe('solvable');

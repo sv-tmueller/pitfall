@@ -207,18 +207,44 @@ describe('teleporter adapter', () => {
 // ---------------------------------------------------------------------------
 
 describe('gravity-zone adapter', () => {
-  it('publishes gravityDirection 1 when the body is outside the zone', () => {
+  // A real zone: pixel x/y (top-left) plus width/height, the dialect every
+  // shipped level and the validator's extractGravityZone use. A body whose
+  // AABB overlaps it reads -1 (inverted); one clear of it reads 1.
+  function zoneEntry(): MechanicEntry {
+    return makeEntry('gravity-zone', { x: 16, y: 16, width: 48, height: 32 });
+  }
+
+  it('publishes gravityDirection -1 inside the zone and 1 outside it', () => {
+    const mech = createGravityZoneMechanic(zoneEntry());
+    const inside = mech.step({ body: makeBody(16, 16), actions: noActions(), step: 0 });
+    expect(inside).toEqual({ gravityDirection: -1 });
+
+    const outside = mech.step({ body: makeBody(200, 200), actions: noActions(), step: 0 });
+    expect(outside).toEqual({ gravityDirection: 1 });
+  });
+
+  it('does not invert a body whose edge only touches the zone (strict overlap)', () => {
+    // Flush edges do not overlap, so a player standing on the zone border
+    // reads as outside and gravity stays normal.
+    const mech = createGravityZoneMechanic(makeEntry('gravity-zone', { x: 16, y: 16, width: 16, height: 16 }));
+    const result = mech.step({ body: makeBody(0, 16), actions: noActions(), step: 0 });
+    expect(result).toEqual({ gravityDirection: 1 });
+  });
+
+  it('never inverts when the zone params do not parse', () => {
+    // Unparseable params leave the zone inert (the null fallback), distinct
+    // from the gating proven above.
     const mech = createGravityZoneMechanic(makeEntry('gravity-zone', {}));
     const result = mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
     expect(result).toEqual({ gravityDirection: 1 });
   });
 
   it('can be reset', () => {
-    const mech = createGravityZoneMechanic(makeEntry('gravity-zone', {}));
-    mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
+    const mech = createGravityZoneMechanic(zoneEntry());
+    mech.step({ body: makeBody(16, 16), actions: noActions(), step: 0 });
     mech.reset();
-    const result = mech.step({ body: makeBody(0, 0), actions: noActions(), step: 0 });
-    expect(result).toEqual({ gravityDirection: 1 });
+    const result = mech.step({ body: makeBody(16, 16), actions: noActions(), step: 0 });
+    expect(result).toEqual({ gravityDirection: -1 });
   });
 });
 

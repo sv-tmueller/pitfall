@@ -373,3 +373,185 @@ describe('stepController - variable jump height', () => {
     expect(state.body.x + state.body.width).toBeLessThanOrEqual(solid.x);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inverted gravity (gravityDir = -1)
+// ---------------------------------------------------------------------------
+//
+// The controller owns the gravity sign, so every vertical behaviour is the
+// exact mirror of the normal-gravity path: gravity pulls toward -y, the
+// surface the body stands on is ABOVE it, the takeoff impulse points toward
+// +y, and the release cut halves an ascent travelling against the pull. These
+// tests pin that symmetry directly, rather than inferring it from the
+// integration play-throughs.
+
+const INVERTED = -1 as const;
+
+// Mirror of walkOffLedge: a body resting under a ceiling walks right past the
+// ceiling's edge and returns the state from the first step whose resolve left
+// it airborne (falling toward -y, the inverted "down").
+function walkOffCeiling(grid: TileGrid): ControllerState {
+  const walkRight = actions({ right: true });
+  let state = createControllerState(makeBody({ x: 0, y: 16, grounded: true }));
+
+  for (let i = 0; i < 100; i++) {
+    const wasGrounded = state.body.grounded;
+    state = stepController(state, walkRight, grid, DT, [], INVERTED);
+    if (wasGrounded && !state.body.grounded) {
+      return state;
+    }
+  }
+
+  throw new Error('body never walked off the ceiling');
+}
+
+// Mirror of stepsUntilGrounded: a body released under a ceiling falls toward
+// -y and lands on the ceiling above; returns the landing step count.
+function stepsUntilGroundedInverted(grid: TileGrid): number {
+  let state = createControllerState(makeBody({ x: 0, y: 32 }));
+  const noJump = actions();
+  let steps = 0;
+
+  while (!state.body.grounded) {
+    state = stepController(state, noJump, grid, DT, [], INVERTED);
+    steps++;
+  }
+
+  return steps;
+}
+
+describe('stepController - inverted gravity', () => {
+  it('signs the takeoff impulse against gravity, flipping JUMP_VEL to +y', () => {
+    // A body resting on the underside of a ceiling: the inverted ground is
+    // above it, so a jump travels toward +y. JUMP_VEL (-260 against normal
+    // gravity) therefore reads +260.
+    const grid = parseGrid(['###', '...', '...']);
+    const state = createControllerState(makeBody({ x: 16, y: 16, grounded: true }));
+
+    const result = stepController(
+      state,
+      actions({ jumpPressed: true, jumpHeld: true }),
+      grid,
+      DT,
+      [],
+      INVERTED,
+    );
+
+    expect(result.body.velocity.y).toBe(260);
+    expect(result.body.velocity.y).toBe(-JUMP_VEL);
+  });
+
+  it('lands on the ceiling above and sets grounded, refilling coyote steps', () => {
+    const grid = parseGrid(['###', '...', '...', '...']);
+    let state = createControllerState(makeBody({ x: 0, y: 32 }));
+    const act = actions();
+
+    for (let i = 0; i < 30 && !state.body.grounded; i++) {
+      state = stepController(state, act, grid, DT, [], INVERTED);
+    }
+
+    expect(state.body.grounded).toBe(true);
+    expect(state.body.y).toBe(16);
+    expect(state.body.velocity.y).toBe(0);
+    expect(state.coyoteSteps).toBe(COYOTE_STEPS);
+  });
+
+  it('clamps inverted free fall to -TERMINAL_VEL, the mirror of the normal clamp', () => {
+    const grid = parseGrid(['.']);
+    let state = createControllerState(makeBody());
+    const act = actions();
+
+    for (let step = 1; step <= 26; step++) {
+      state = stepController(state, act, grid, DT, [], INVERTED);
+    }
+    expect(state.body.velocity.y).toBe(-390);
+
+    state = stepController(state, act, grid, DT, [], INVERTED);
+    expect(state.body.velocity.y).toBe(-400);
+
+    for (let step = 28; step <= 60; step++) {
+      state = stepController(state, act, grid, DT, [], INVERTED);
+    }
+    expect(state.body.velocity.y).toBe(-400);
+  });
+
+  it('fires an inverted coyote jump on step T+6 after leaving the ceiling', () => {
+    const grid = parseGrid(['##.', '...', '...']);
+    const walkRight = actions({ right: true });
+
+    let state = walkOffCeiling(grid);
+    for (let i = 0; i < 4; i++) {
+      state = stepController(state, walkRight, grid, DT, [], INVERTED);
+    }
+
+    const result = stepController(
+      state,
+      actions({ right: true, jumpPressed: true, jumpHeld: true }),
+      grid,
+      DT,
+      [],
+      INVERTED,
+    );
+
+    expect(result.body.velocity.y).toBe(-JUMP_VEL);
+  });
+
+  it('refuses an inverted coyote jump on step T+7 after leaving the ceiling', () => {
+    const grid = parseGrid(['##.', '...', '...']);
+    const walkRight = actions({ right: true });
+
+    let state = walkOffCeiling(grid);
+    for (let i = 0; i < 5; i++) {
+      state = stepController(state, walkRight, grid, DT, [], INVERTED);
+    }
+
+    const result = stepController(
+      state,
+      actions({ right: true, jumpPressed: true, jumpHeld: true }),
+      grid,
+      DT,
+      [],
+      INVERTED,
+    );
+
+    // Seventh airborne step, 7 x 15 px/s of downward gravity; a fired jump
+    // would read +260.
+    expect(result.body.velocity.y).toBe(-105);
+  });
+
+  it('fires a jump buffered 6 real steps before an inverted landing', () => {
+    const grid = parseGrid(['###', '...', '...', '...']);
+    const noJump = actions();
+    const landingStep = stepsUntilGroundedInverted(grid);
+
+    let state = createControllerState(makeBody({ x: 0, y: 32 }));
+    for (let step = 1; step <= landingStep; step++) {
+      const act =
+        step === landingStep - 6 ? actions({ jumpPressed: true, jumpHeld: true }) : noJump;
+      state = stepController(state, act, grid, DT, [], INVERTED);
+    }
+    expect(state.body.grounded).toBe(true);
+    expect(state.body.velocity.y).toBe(0);
+
+    state = stepController(state, actions({ jumpHeld: true }), grid, DT, [], INVERTED);
+    expect(state.body.velocity.y).toBe(-JUMP_VEL);
+  });
+
+  it('halves the inverted ascent exactly once on release', () => {
+    // Release-cut symmetry: travelling against the inverted pull (vy toward
+    // +y) is "rising", so the same x0.5 cut applies.
+    const grid = parseGrid(['.']);
+    let state: ControllerState = {
+      body: makeBody({ grounded: false, velocity: { x: 0, y: -JUMP_VEL } }),
+      coyoteSteps: 0,
+      jumpBufferSteps: -1,
+      jumpCutArmed: true,
+    };
+
+    state = stepController(state, actions(), grid, DT, [], INVERTED);
+    expect(state.body.velocity.y).toBe(122.5);
+
+    state = stepController(state, actions(), grid, DT, [], INVERTED);
+    expect(state.body.velocity.y).toBe(107.5);
+  });
+});
