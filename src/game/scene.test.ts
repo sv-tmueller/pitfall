@@ -876,6 +876,118 @@ describe('scene - dynamic solids (issue #158)', () => {
     expect(s.phase).toBe('playing');
     expect(s.deathsThisLevel).toBe(0);
   });
+
+  it('a rider carried into the ceiling row is clamped below it (issue #181)', () => {
+    // A platform rises from y = 64 (row 4's top) at 240 px/s: four pixels per
+    // step. The rider spawns flush on its top (bottom edge at y = 64), so it
+    // rides up 4 px per step while the shaft's row-0 ceiling leaves 32 px of
+    // headroom; the ninth carry overruns what is left and pushes the rider's
+    // top into the ceiling row. Before the clamp the carry drove the rider
+    // clean through the ceiling (the top ended above y = 0); now the top is
+    // re-seated flush at y = 16 and the rider waits there.
+    // Residual, documented and not fixed: once the flush window closes the
+    // rider falls away and a continuing riser engulfs it, which is correct
+    // for a non-lethal mechanic solid (no crush arm change, PR #178
+    // settlement; the #168 landing guard still owns no-pull-out).
+    const source = makeShaftLevel({
+      cols: 12,
+      spawn: { col: 4, row: 3 },
+      exit: { col: 1, row: 1 },
+      mechanics: [
+        {
+          id: 'riser',
+          type: 'moving-platform',
+          params: {
+            startX: 64,
+            startY: 64,
+            width: 32,
+            height: 16,
+            dx: 0,
+            dy: -1,
+            speed: 240,
+            distance: 96,
+          },
+        },
+      ],
+    });
+
+    let s = createScene([source]);
+    let minY = s.controller.body.y;
+    let pinnedSteps = 0;
+
+    for (let i = 0; i < 20; i++) {
+      s = stepScene(s, idle(), DT);
+      const body = s.controller.body;
+      minY = Math.min(minY, body.y);
+
+      // Never above the ceiling: the top stays at or below y = 16, the row-0
+      // ceiling's bottom face.
+      expect(body.y).toBeGreaterThanOrEqual(TILE_SIZE);
+      // Pinned between platform and ceiling: still grounded, so the next
+      // step's carry still sees the rider.
+      if (body.y === TILE_SIZE) {
+        expect(body.grounded).toBe(true);
+        pinnedSteps++;
+      }
+    }
+
+    // The ride reached the ceiling (so the clamp path ran) and never crossed
+    // it.
+    expect(minY).toBe(TILE_SIZE);
+    expect(pinnedSteps).toBeGreaterThan(0);
+    // Non-lethal mechanic solid: the crush arm never trips.
+    expect(s.phase).toBe('playing');
+    expect(s.deathsThisLevel).toBe(0);
+  });
+
+  it('with ample headroom the carried ride is unchanged by the clamp (issue #181)', () => {
+    // Same setup, but the platform travels only four steps (distance 16), so
+    // the rider's top never comes near the row-0 ceiling. The flush carry
+    // behavior must be exactly the pre-#181 one: grounded every step and
+    // seated on the platform's end-of-step top.
+    const source = makeShaftLevel({
+      cols: 12,
+      spawn: { col: 4, row: 3 },
+      exit: { col: 1, row: 1 },
+      mechanics: [
+        {
+          id: 'riser',
+          type: 'moving-platform',
+          params: {
+            startX: 64,
+            startY: 64,
+            width: 32,
+            height: 16,
+            dx: 0,
+            dy: -1,
+            speed: 240,
+            distance: 16,
+          },
+        },
+      ],
+    });
+
+    let s = createScene([source]);
+    let ridden = false;
+
+    for (let i = 0; i < 4; i++) {
+      s = stepScene(s, idle(), DT);
+      const platform = s.mechanicsRuntime.publishedSolids[0]!;
+      const body = s.controller.body;
+
+      if (ridden) {
+        expect(body.grounded).toBe(true);
+        const endTop = platform.y + platform.velocityY * DT;
+        expect(Math.abs(body.y + body.height - endTop)).toBeLessThanOrEqual(1);
+      }
+      if (body.grounded) ridden = true;
+    }
+
+    expect(ridden).toBe(true);
+    // Still below the ceiling with room to spare: the clamp never fired.
+    expect(s.controller.body.y).toBeGreaterThan(TILE_SIZE);
+    expect(s.phase).toBe('playing');
+  });
 });
 
 describe('scene - runtime-owned mechanics (issue #159)', () => {
