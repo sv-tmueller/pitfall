@@ -1,7 +1,22 @@
 // Vanishing floor trap (#14): floor tiles that look ordinary and disappear
-// on a trigger. After delaySteps, the specified tiles are set to Empty.
-// If returns=true, they are restored to Solid after returnDelaySteps more
-// steps.
+// on a trigger.
+//
+// Lifecycle (deterministic, per arm cycle):
+//   fuse  -> vanished -> done (terminal)
+//
+// Timing. For an on-timer trigger the authored delaySteps is consumed by the
+// trigger threshold in evaluate(), so apply() vanishes the tiles on its first
+// call: the floor disappears at exactly the authored delay measured from
+// level start. For on-land / on-approach triggers, whose evaluate() ignores
+// delaySteps, the authored delay is applied as a post-trigger fuse here: the
+// floor disappears at exactly the authored delay measured from the trigger.
+//
+// Restoration. Each target tile's original Tile value is recorded at vanish
+// time and replayed on restore, so OneWay, Empty (pit) and Hazard tiles
+// return as authored rather than being forced to Solid. A body parked over a
+// tile defers that tile's restore until the body clears it, so the player is
+// never embedded in a freshly restored solid. Restoration happens at most
+// once; afterwards the trap is terminal and apply() no-ops.
 
 import type { TilePosition } from '../../levels/types';
 import { Tile } from '../../engine/physics';
@@ -18,15 +33,20 @@ import {
   optNumber,
 } from './helpers';
 
+const TILE_SIZE = 16;
+
+type Phase = 'fuse' | 'vanished' | 'done';
+
 interface VanishingFloorState {
   tiles: TilePosition[];
-  delaySteps: number;
+  fuseSteps: number;         // 0 for on-timer (delay spent by the threshold)
   returns: boolean;
   returnDelaySteps: number;
-  // Internal counters for delayed vanishing and scheduled return.
-  triggerStep: number;       // step when evaluate() returned true (-1 = not yet)
-  vanished: boolean;          // tiles currently set to Empty
-  applyCountSinceFire: number;
+  phase: Phase;
+  fuseCount: number;         // apply() calls since the trigger fired, minus one
+  waitCount: number;         // apply() calls since the tiles vanished
+  originals: number[];       // Tile value recorded per target tile at vanish
+  restoredFlags: boolean[];  // per target tile: already put back
 }
 
 /**
@@ -38,12 +58,12 @@ function tilesBounds(tiles: readonly TilePosition[]): AABB {
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (const t of tiles) {
-    const x = t.col * 16;
-    const y = t.row * 16;
+    const x = t.col * TILE_SIZE;
+    const y = t.row * TILE_SIZE;
     minX = Math.min(minX, x);
     minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + 16);
-    maxY = Math.max(maxY, y + 16);
+    maxX = Math.max(maxX, x + TILE_SIZE);
+    maxY = Math.max(maxY, y + TILE_SIZE);
   }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
@@ -58,6 +78,10 @@ function bodyDistance(body: Body, aabb: AABB): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+function tileRect(t: TilePosition): AABB {
+  return { x: t.col * TILE_SIZE, y: t.row * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE };
+}
+
 export function createVanishingFloor(entry: TrapEntry): TrapInstance {
   const trigger = buildTriggerContext(entry.trigger, entry.params);
   const tiles = reqTileArray(entry.params, 'tiles');
@@ -69,12 +93,16 @@ export function createVanishingFloor(entry: TrapEntry): TrapInstance {
 
   const state: VanishingFloorState = {
     tiles,
-    delaySteps,
+    // An on-timer trigger already waits delaySteps before evaluate() returns
+    // true; any further fuse would double the authored delay.
+    fuseSteps: trigger.kind === 'on-timer' ? 0 : delaySteps,
     returns,
     returnDelaySteps,
-    triggerStep: -1,
-    vanished: false,
-    applyCountSinceFire: 0,
+    phase: 'fuse',
+    fuseCount: 0,
+    waitCount: 0,
+    originals: [],
+    restoredFlags: [],
   };
 
   function evaluateImpl(this: TrapInstance, world: WorldState, _step: number): boolean {
@@ -100,54 +128,83 @@ export function createVanishingFloor(entry: TrapEntry): TrapInstance {
     }
   }
 
-  function applyImpl(this: TrapInstance, world: WorldState): void {
-    // First call: mark trigger step, schedule vanishing.
-    if (state.triggerStep < 0) {
-      state.triggerStep = this.stepsSinceArm;
-    }
-
-    state.applyCountSinceFire++;
-
-    // How many steps since the trigger fired?
-    const stepsSinceTrigger = state.applyCountSinceFire - 1;
-
-    // Phase 1: waiting for delaySteps before vanishing.
-    if (!state.vanished) {
-      if (stepsSinceTrigger >= state.delaySteps) {
-        for (const t of state.tiles) {
-          const idx = t.row * world.cols + t.col;
-          if (idx >= 0 && idx < world.tiles.length) {
-            world.tiles[idx] = Tile.Empty;
-          }
-        }
-        state.vanished = true;
-        state.applyCountSinceFire = 0; // restart counter for return phase
+  /** Records the authored tile values, then empties every target tile. */
+  function vanish(world: WorldState): void {
+    state.originals = [];
+    state.restoredFlags = [];
+    state.tiles.forEach((t) => {
+      const idx = t.row * world.cols + t.col;
+      const inRange = idx >= 0 && idx < world.tiles.length;
+      state.originals.push(inRange ? (world.tiles[idx] ?? Tile.Solid) : Tile.Solid);
+      state.restoredFlags.push(false);
+      if (inRange) {
+        world.tiles[idx] = Tile.Empty;
       }
+    });
+  }
+
+  /**
+   * Replays the recorded originals, skipping any tile whose rect currently
+   * overlaps the player. Returns true once every tile is back.
+   */
+  function restore(world: WorldState): boolean {
+    let allRestored = true;
+    state.tiles.forEach((t, k) => {
+      if (state.restoredFlags[k]) return;
+      const idx = t.row * world.cols + t.col;
+      if (idx < 0 || idx >= world.tiles.length) {
+        state.restoredFlags[k] = true;
+        return;
+      }
+      if (aabbOverlap(world.playerBody, tileRect(t))) {
+        // Never restore a solid into the player's body; retry next step.
+        allRestored = false;
+        return;
+      }
+      world.tiles[idx] = state.originals[k] ?? Tile.Solid;
+      state.restoredFlags[k] = true;
+    });
+    return allRestored;
+  }
+
+  function applyImpl(this: TrapInstance, world: WorldState): void {
+    void this;
+
+    if (state.phase === 'done') {
+      // Terminal: the runtime's animation pass keeps calling apply() safely.
       return;
     }
 
-    // Phase 2: if returns, wait returnDelaySteps then restore.
-    if (state.returns) {
-      if (state.applyCountSinceFire >= state.returnDelaySteps) {
-        for (const t of state.tiles) {
-          const idx = t.row * world.cols + t.col;
-          if (idx >= 0 && idx < world.tiles.length) {
-            world.tiles[idx] = Tile.Solid;
-          }
-        }
-        state.vanished = false;
+    if (state.phase === 'fuse') {
+      if (state.fuseCount < state.fuseSteps) {
+        state.fuseCount++;
+        return;
+      }
+      vanish(world);
+      state.waitCount = 0;
+      // A floor that never returns is finished the moment it vanishes.
+      state.phase = state.returns ? 'vanished' : 'done';
+      return;
+    }
+
+    // phase === 'vanished'
+    state.waitCount++;
+    if (state.waitCount >= state.returnDelaySteps) {
+      if (restore(world)) {
+        state.phase = 'done';
       }
     }
-    // Non-returning floors stay vanished: nothing more to do.
   }
 
   function resetImpl(this: TrapInstance): void {
     this.armed = true;
     this.fired = false;
     this.stepsSinceArm = 0;
-    state.triggerStep = -1;
-    state.vanished = false;
-    state.applyCountSinceFire = 0;
+    state.phase = 'fuse';
+    state.fuseCount = 0;
+    state.waitCount = 0;
+    state.originals = [];
+    state.restoredFlags = [];
   }
 
   return {

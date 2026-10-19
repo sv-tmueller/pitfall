@@ -11,6 +11,7 @@ import { aabbOverlap } from '../../engine/physics';
 import type { AABB, Body } from '../../engine/physics';
 import type { TrapEntry } from '../../levels/types';
 import type { TrapInstance, WorldState } from '../types';
+import type { HazardRect } from '../../engine/levelAdapter';
 import { registerTrapType } from '../registry';
 import {
   buildTriggerContext,
@@ -34,7 +35,10 @@ interface SpikesState {
   // Lifecycle: 'idle' -> 'extending' -> 'extended' -> 'retracting' -> 'idle'
   phase: 'idle' | 'extending' | 'extended' | 'retracting';
   progress: number; // steps in current phase
-  hazardIdx: number; // index into world.hazards for our managed rect, -1 if none
+  // Held reference to our own managed hazard rect, null when retracted.
+  // Identity-based tracking: a sibling spike's splice shifts indices but
+  // never invalidates this reference (index-based tracking orphaned rects).
+  hazard: HazardRect | null;
 }
 
 const FULL_EXTENT = 16;
@@ -98,7 +102,7 @@ export function createEmergingSpikes(entry: TrapEntry): TrapInstance {
     repeats,
     phase: 'idle',
     progress: 0,
-    hazardIdx: -1,
+    hazard: null,
   };
 
   function evaluateImpl(this: TrapInstance, world: WorldState, _step: number): boolean {
@@ -123,14 +127,32 @@ export function createEmergingSpikes(entry: TrapEntry): TrapInstance {
   }
 
   /**
-   * Gets the index of this trap's hazard in world.hazards. Returns -1 if
-   * not currently tracked or if the index is out of bounds.
+   * Inserts or replaces this trap's managed hazard rect, tracking it by
+   * object identity. Sibling spikes splicing their own rects out of the
+   * shared world.hazards array cannot orphan it.
    */
-  function getHazardIdx(world: WorldState): number {
-    if (state.hazardIdx < 0 || state.hazardIdx >= world.hazards.length) {
-      return -1;
+  function upsertHazard(world: WorldState, rect: AABB): void {
+    if (state.hazard !== null) {
+      const idx = world.hazards.indexOf(state.hazard);
+      if (idx >= 0) {
+        world.hazards[idx] = rect;
+        state.hazard = rect;
+        return;
+      }
     }
-    return state.hazardIdx;
+    world.hazards.push(rect);
+    state.hazard = rect;
+  }
+
+  /** Removes this trap's managed hazard rect by identity, if present. */
+  function removeHazard(world: WorldState): void {
+    if (state.hazard !== null) {
+      const idx = world.hazards.indexOf(state.hazard);
+      if (idx >= 0) {
+        world.hazards.splice(idx, 1);
+      }
+      state.hazard = null;
+    }
   }
 
   function applyImpl(this: TrapInstance, world: WorldState): void {
@@ -151,13 +173,7 @@ export function createEmergingSpikes(entry: TrapEntry): TrapInstance {
       const rect = computeHazardRect(state, fraction);
 
       if (fraction > 0) {
-        const idx = getHazardIdx(world);
-        if (idx >= 0) {
-          world.hazards[idx] = rect;
-        } else {
-          world.hazards.push(rect);
-          state.hazardIdx = world.hazards.length - 1;
-        }
+        upsertHazard(world, rect);
       }
 
       if (state.progress >= state.extendSteps) {
@@ -185,20 +201,10 @@ export function createEmergingSpikes(entry: TrapEntry): TrapInstance {
       const rect = computeHazardRect(state, fraction);
 
       if (fraction > 0) {
-        const idx = getHazardIdx(world);
-        if (idx >= 0) {
-          world.hazards[idx] = rect;
-        } else {
-          world.hazards.push(rect);
-          state.hazardIdx = world.hazards.length - 1;
-        }
+        upsertHazard(world, rect);
       } else {
         // Fully retracted: remove the hazard.
-        const idx = getHazardIdx(world);
-        if (idx >= 0) {
-          world.hazards.splice(idx, 1);
-        }
-        state.hazardIdx = -1;
+        removeHazard(world);
         state.phase = 'idle';
         state.progress = 0;
       }
@@ -211,7 +217,7 @@ export function createEmergingSpikes(entry: TrapEntry): TrapInstance {
     this.stepsSinceArm = 0;
     state.phase = 'idle';
     state.progress = 0;
-    state.hazardIdx = -1;
+    state.hazard = null;
   }
 
   return {

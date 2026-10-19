@@ -406,8 +406,9 @@ function stepPlaying(
     return next;
   }
 
-  // 9. Exit check.
-  if (aabbOverlap(controller.body, exitAABB(state.level.exit))) {
+  // 9. Exit check. Reads the WORLD's mutable exitPos: the fake-exit trap
+  //    slides the door away, and only the moved tile may open the door.
+  if (aabbOverlap(controller.body, exitAABB(state.runtime.world.exitPos))) {
     // Restore world arrays before transitioning.
     state.runtime.world.dynamicSolids.length = savedSolidsLen;
     state.runtime.world.hazards.length = savedHazardsLen;
