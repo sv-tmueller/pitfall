@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveAndCollide, Tile, tileAt, type Body, type SolidRect } from './physics';
+import { moveAndCollide, Tile, TILE_SIZE, tileAt, type Body, type SolidRect } from './physics';
 import { parseGrid } from './testGrid';
 
 const DT = 1 / 60;
@@ -390,5 +390,84 @@ describe('moveAndCollide - inverted gravity dynamic solids', () => {
     expect(result.body.x).toBe(32);
     expect(result.body.velocity.x).toBe(0);
     expect(result.hitWall).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Carried rider vs solid ceiling (issue #181)
+// ===========================================================================
+
+describe('moveAndCollide - carried rider vs solid ceiling (issue #181)', () => {
+  // Row 0 is a full solid ceiling; the rows below are open.
+  const ceilingGrid = parseGrid(['###', '...', '...', '...']);
+
+  it('clamps the top flush below a ceiling tile the carry pushed it into', () => {
+    // The scene displaces a grounded rider by its platform's per-step rise
+    // BEFORE this solve (carryRiders), while the rider's own vy stays at the
+    // gravity floor (>= 15). A top at y = 15 is one pixel inside the ceiling
+    // row: the state a carry that overruns the remaining headroom leaves
+    // behind. The landing loop inspects only the bottom row span, so the
+    // intrusion used to be accepted verbatim (y = 15.25) and a continuing
+    // carry could push the rider clean through the ceiling.
+    const body = makeBody({ x: 0, y: 15, velocity: { x: 0, y: 15 } });
+
+    const result = moveAndCollide(body, ceilingGrid, DT);
+
+    expect(result.body.y).toBe(TILE_SIZE);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.hitCeiling).toBe(true);
+    expect(result.body.grounded).toBe(false);
+  });
+
+  it('leaves a top that stops exactly flush with the ceiling bottom unclamped', () => {
+    // Headroom exactly equals the carry this step: the top ends up flush at
+    // the ceiling's bottom face (y = 16). A flush edge is not an intrusion,
+    // so the solve is untouched and matches the same grid without the ceiling
+    // row.
+    const body = makeBody({ x: 0, y: TILE_SIZE, velocity: { x: 0, y: 15 } });
+    const openGrid = parseGrid(['...', '...', '...', '...']);
+
+    const result = moveAndCollide(body, ceilingGrid, DT);
+
+    expect(result).toEqual(moveAndCollide(body, openGrid, DT));
+    expect(result.body.y).toBe(TILE_SIZE + 15 * DT);
+    expect(result.hitCeiling).toBe(false);
+  });
+
+  it('never fires while the reached top row is open, even with a solid row one above', () => {
+    // Anti-pull-out pin for the dead-code claim: the clamp reads the reached
+    // row only, so a body overlapping a dynamic solid with an open top row
+    // stays untouched (the #168 guards own the no-pull-out invariant, which
+    // this clamp must not bypass).
+    const platform: SolidRect = { x: 0, y: 32, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 30, velocity: { x: 0, y: 240 } });
+
+    const result = moveAndCollide(body, ceilingGrid, DT, [platform]);
+
+    expect(result.body.grounded).toBe(false);
+    expect(result.hitCeiling).toBe(false);
+    expect(result.body.y).toBeCloseTo(30 + 240 * DT);
+    // Identical to the same solve with the ceiling row cleared.
+    const openGrid = parseGrid(['...', '...', '...', '...']);
+    expect(result).toEqual(moveAndCollide(body, openGrid, DT, [platform]));
+  });
+
+  it('clamps the foot flush above a solid tile below (inverted mirror)', () => {
+    // Under inverted gravity the ground is above, so the mirror of the
+    // ceiling clamp is a solid tile BELOW: a platform moving down carries
+    // its hanging rider's foot into the row beneath. A bottom at y = 52 sits
+    // four pixels inside the row-3 solid row. The inverted landing loop
+    // inspects only the top row, so the foot used to stay embedded
+    // (y = 35.75) and a continuing descent could push the rider's foot clean
+    // through the solid row.
+    const floorGrid = parseGrid(['...', '...', '...', '###']);
+    const body = makeBody({ x: 0, y: 36, velocity: { x: 0, y: -15 } });
+
+    const result = moveAndCollide(body, floorGrid, DT, [], -1);
+
+    expect(result.body.y).toBe(32);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.hitCeiling).toBe(true);
+    expect(result.body.grounded).toBe(false);
   });
 });

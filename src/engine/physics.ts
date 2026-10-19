@@ -225,6 +225,35 @@ function resolveY(
         grounded = true;
       }
     }
+
+    // Carried-rider ceiling clamp (issue #181). A grounded rider on a rising
+    // platform is displaced up by carryRiders before this solve, while its own
+    // vy stays at the gravity floor (>= 15) and takes this landing branch. The
+    // loops above inspect only the BOTTOM row span, so when the carry overruns
+    // the remaining headroom the top intrudes a ceiling tile and the intrusion
+    // is accepted verbatim; a continuing carry can then drive the rider clean
+    // through the ceiling. Re-seat the top flush below the row it reached.
+    //   - Tiles only, and only the row containing the highest top edge reached
+    //     this step (min of the post-carry and post-integration tops).
+    //     Single-row scope: an intrusion deeper than one row keeps its
+    //     residual overlap (handling that is general depenetration, a
+    //     non-goal per batch #164).
+    //   - `grounded` is left as the landing loop computed it, so a rider
+    //     pinned between platform and ceiling stays grounded (and carried)
+    //     instead of oscillating in and out of the carry.
+    //   - A body moving under its own vy >= 0 cannot newly occupy a solid top
+    //     row, so for non-carried bodies this only fires for externally
+    //     displaced bodies (a teleporter bodyOverride aimed into a ceiling).
+    const topReached = Math.min(body.y, y);
+    const topRow = spanStart(topReached);
+    for (let col = minCol; col <= maxCol; col++) {
+      if (tileAt(grid, col, topRow) === Tile.Solid) {
+        y = (topRow + 1) * TILE_SIZE;
+        resolvedVy = 0;
+        hitCeiling = true;
+        break;
+      }
+    }
   } else if (towardGround) {
     // Inverted gravity: land on the tile ABOVE. The tile's bottom face is
     // the floor; a one-way tile is solid only from below (the body's top
@@ -249,6 +278,25 @@ function resolveY(
         y = stop;
         resolvedVy = 0;
         grounded = true;
+      }
+    }
+
+    // Carried-rider foot clamp, the inverted mirror of the ceiling clamp in
+    // the normal-gravity landing branch above (issue #181). In inverted
+    // gravity the ground is above and the rider hangs beneath a platform, so
+    // a platform moving DOWN carries its rider toward the solid tile rows
+    // below, the rows whose top faces the foot bumps. The loops above inspect
+    // only the TOP row span, so that intrusion used to be accepted verbatim.
+    // Re-seat the foot flush above the row it reached. Tiles only, single-row
+    // scope, `grounded` untouched: same rules as the mirror clamp.
+    const lowestTop = Math.max(body.y, y);
+    const bottomRow = spanEnd(lowestTop, body.height);
+    for (let col = minCol; col <= maxCol; col++) {
+      if (tileAt(grid, col, bottomRow) === Tile.Solid) {
+        y = bottomRow * TILE_SIZE - body.height;
+        resolvedVy = 0;
+        hitCeiling = true;
+        break;
       }
     }
   } else if (gravityDir === 1) {
