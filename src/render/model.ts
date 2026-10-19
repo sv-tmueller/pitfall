@@ -217,8 +217,11 @@ export function buildDynamicSolidRects(
 
   for (const ds of world.dynamicSolids) {
     if (!ds.solid) continue;
-    const rx = ds.x - camera.x;
-    const ry = ds.y - camera.y;
+    // Snap to whole pixels: mechanic-published solids sit at fractional
+    // positions (e.g. rotating-arm pivots derived from cos/sin), and the
+    // whole-pixel contract covers every draw coordinate.
+    const rx = snap(ds.x - camera.x);
+    const ry = snap(ds.y - camera.y);
     // Cull: rect must overlap viewport
     if (
       rx < VIEWPORT_W &&

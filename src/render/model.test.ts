@@ -270,6 +270,28 @@ describe('buildDynamicSolidRects', () => {
     const rects = buildDynamicSolidRects(world, { x: 0, y: 0 });
     expect(rects).toHaveLength(0);
   });
+
+  it('snaps fractional solid positions to whole pixels', () => {
+    // Mechanic-published solids sit at fractional positions (rotating-arm
+    // pivots derive x/y from cos/sin); every draw coordinate must be whole.
+    const ds: DynamicSolid = {
+      id: 'ds1',
+      x: 94.6,
+      y: 132.8,
+      width: 16,
+      height: 16,
+      velocityX: 0,
+      velocityY: 0,
+      solid: true,
+      lethal: false,
+    };
+    const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
+    const rects = buildDynamicSolidRects(world, { x: 0, y: 0 });
+    expect(rects).toHaveLength(1);
+    expect(Number.isInteger(rects[0]!.x)).toBe(true);
+    expect(Number.isInteger(rects[0]!.y)).toBe(true);
+    expect(rects[0]).toMatchObject({ x: 95, y: 133, w: 16, h: 16 });
+  });
 });
 
 describe('buildEntitySprites', () => {
