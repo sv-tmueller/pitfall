@@ -160,13 +160,15 @@ describe('fake-exit levels remain completable', () => {
 
 // w3/45 (world-3-finale) is NOT completable as shipped, and never was:
   // the only ascent to the midsection is the teleporter at (160,336), whose
-  // destination (112,256) sits inside the bot-crush crusher's on-enter
-  // danger zone (x 112-144, y 224-272). The crusher drops 3 px/step for
-  // 48 px and kills anyone in the pocket before any escape or climb can
-  // clear its footprint (verified by step-level simulation on this branch
-  // AND on origin/main: both end in phase=dying). Every alternative ascent
-  // is geometrically out of reach (empirical max jump rise ~72 px vs the
-  // 80 px col-13 pillar and the 96 px lowest west one-way). Level redesign
-  // is an explicit non-goal of issue #160; tracked separately.
+  // destination (112,256) is a standable one-way cap inside the bot-crush
+  // crusher's on-enter danger zone (x 112-144, y 224-272). The crusher
+  // drops 3 px/step for 48 px; a full-speed west sprint off the cap loses
+  // the escape race by 2 px (observed on this branch AND on origin/main:
+  // both end in phase=dying), and any jump intersects the descending
+  // solid within ~5 steps. Every alternative ascent is geometrically out
+  // of reach: the engine's jump apex is 260^2 / (2 x 900) ~= 37.6 px
+  // (JUMP_VEL -260, GRAVITY 900), versus the 80 px col-13 pillar and the
+  // 96 px lowest west one-way. Level redesign is an explicit non-goal of
+  // issue #160; tracked separately.
   it.todo('w3/45 world-3-finale completes (blocked by a pre-existing level deadlock)');
 });
