@@ -39,6 +39,8 @@ const ALLOWLIST: Readonly<Record<string, string>> = {
     'jetpack mechanic is not modelled; the BFS cannot certify the route without it',
   'mechanism':
     'shifting-wall trap rearranges geometry at runtime; the static sweep sees the wall closed and cannot certify the level',
+  gravitas:
+    'gravity inversion not implemented in engine (issue #174); validator no longer models it, so the normal-gravity BFS cannot certify the route',
 };
 
 /** The 45 shipped levels in sequence order. */
@@ -180,6 +182,30 @@ describe('structured verdict taxonomy pins (#161)', () => {
     expect(result.reachable).toBe(false);
     expect(result.status).toBe('not-modelled');
     expect(result.unmodeled).toContain('shifting-wall');
+  });
+
+  it('gravitas withholds the verdict as not-modelled due to the unimplemented gravity zone', () => {
+    // Issue #174: gravity inversion is an engine no-op, so the validator
+    // models normal gravity only. The normal-gravity BFS cannot solve
+    // w2/gravitas (the exit hangs in the air beyond the jump apex), so
+    // the verdict must be WITHHELD with the declared gravity-zone
+    // mechanic named, never a false 'solvable' certificate and never a
+    // definitive 'unsolvable'.
+    const result = validateSolvability(loadLevel(WORLD2_LEVELS.gravitas));
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('gravity-zone');
+  });
+
+  it('ceiling-walk stays certified solvable in the normal-gravity model', () => {
+    // The OTHER gravity-zone level must remain green: it is completable
+    // in normal gravity (verified by the hopBot simulation at step 198).
+    // Its exit hangs in the air, so certification relies on the
+    // engine-faithful exit rule (completion = AABB overlap with the exit
+    // cell), reached from the standable one-way ladder below it.
+    const result = validateSolvability(loadLevel(WORLD2_LEVELS['ceiling-walk']));
+    expect(result.reachable).toBe(true);
+    expect(result.status).toBe('solvable');
   });
 
   it('anti-stale contrapositive: a reachable level named in an allowlist FAILS the gate', () => {

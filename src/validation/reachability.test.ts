@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateReachability } from './reachability';
+import { validateReachability, validateSolvability } from './reachability';
 import { loadLevel } from '../levels/load';
 import { FIXTURE_SOURCES } from '../levels/fixtures';
 
@@ -49,10 +49,19 @@ describe('reachability validation (physics-calibrated)', () => {
     expect(validateReachability(veryBlocked)).toBe(false);
   });
 
-  it('OLD shaft geometry (non-overlapping ledges, 2-col gap) is NOT reachable', () => {
-    // Reproduce the original buggy shaft: left ledges cols 1-8, right ledges
-    // cols 11-18. The 2-tile horizontal gap between alternating tiers exceeds
-    // the jump envelope, so the validator must reject it.
+  it('OLD shaft geometry (non-overlapping ledges, wide gap) is NOT reachable', () => {
+    // Reproduce the original buggy shaft: left ledges cols 1-7, right
+    // ledges cols 11-18. The 3-tile horizontal gap between alternating
+    // tiers exceeds the kinematic jump envelope (a rise-2 jump allows at
+    // most 3 tiles of lateral travel, and the tiers are offset both
+    // horizontally and vertically), so the validator must reject it.
+    //
+    // The gap is 3 tiles (not the historical 2) because a 2-tile offset
+    // is inside the calibrated envelope: rise 2 with lat 3 is flyable at
+    // full run speed, so the old fixture was quietly reachable through
+    // the one-way zigzag once the exit-stop rule matched the engine (the
+    // engine completes on AABB overlap with the exit cell, and the old
+    // fixture's floating exit masked the whole route).
     const oldShaft = loadLevel({
       name: 'old-shaft',
       cols: 20, rows: 24,
@@ -63,23 +72,23 @@ describe('reachability validation (physics-calibrated)', () => {
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '10000000000222222221',
         '10000000000000000001',
-        '12222222200000000001',
+        '12222222000000000001',
         '10000000000000000001',
         '11111111111111111111',
         '11111111111111111111',
@@ -494,30 +503,20 @@ describe('reachability with moving terrain', () => {
   });
 });
 
-describe('reachability with gravity inversion', () => {
-  it('gravity zone allows reaching exit via inverted surfaces', () => {
-    // Full-level gravity inversion. The ceiling acts as the floor.
-    // The player walks on ceiling-derived surfaces and uses "drops"
-    // (which go UP in inverted mode) to navigate.
-    //
-    //   cols: 10, rows: 8
-    //   Row 0: '1100000011' — ceiling with gap at cols 2-7
-    //   Row 1: '1222222221' — one-way ceiling for tunnel (surface above in inv.)
-    //   Row 2: '1000000001' — tunnel
-    //   Row 3: '1000000001' — tunnel
-    //   Row 4: '1111111111' — solid lower ceiling
-    //   Row 5: '1000000001' — lower walkway
-    //   Row 6: '1111111111' — floor
-    //   Row 7: '1111111111' — floor
-    //
-    // Full-level gravity zone: x=0, y=0, w=160, h=128.
-    //
-    // Spawn at (1, 1): above (1, 0) = solid → standable (inverted) ✓
-    // Exit at (8, 1): above (8, 0) = solid → standable (inverted) ✓
-    //
-    // Path: (1,1) → jump↓1 → (2,2) [above=(2,1)=OneWay ✓]
-    //   → walk → (7,2) [all above=OneWay ✓]
-    //   → drop↑1+dc=1 → (8,1) [above=(8,0)=solid ✓]
+describe('gravity zones are not modelled (issue #174)', () => {
+  // Gravity inversion is an engine no-op in the shipped build: the
+  // gravity-zone adapter publishes {} and stepControllerWithGravity has
+  // no consumer. The validator therefore models NORMAL gravity only and
+  // must never certify a route that relies on inverted traversal. A
+  // level declaring a gravity-zone mechanic that the normal-gravity BFS
+  // cannot solve lands 'not-modelled' with 'gravity-zone' in `unmodeled`.
+
+  it('former inversion fixture is NOT reachable in the normal-gravity model', () => {
+    // Full-level gravity zone over a ceiling-walking layout. Under the
+    // removed inversion model the player walked the one-way ceiling
+    // tunnel; in normal gravity the spawn at (1, 1) has no floor beneath
+    // it, so the level is vacuously unreachable no matter what the zone
+    // promises.
     const level = loadLevel({
       name: 'gravity-invert',
       cols: 10, rows: 8,
@@ -542,12 +541,17 @@ describe('reachability with gravity inversion', () => {
         },
       ],
     });
-    expect(validateReachability(level)).toBe(true);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    // The declared gravity zone withholds the verdict instead of a
+    // false certificate either way.
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('gravity-zone');
   });
 
   it('same level WITHOUT gravity zone is unreachable', () => {
-    // Without the zone, spawn at (1,1) is not standable (below = '0'),
-    // so the level is vacuously unreachable.
+    // Without the zone there is no unmodelled mechanic, so the failed
+    // flood-fill is a plain unsolvable verdict.
     const level = loadLevel({
       name: 'no-gravity-zone',
       cols: 10, rows: 8,
@@ -565,35 +569,18 @@ describe('reachability with gravity inversion', () => {
       ],
       traps: [],
     });
-    expect(validateReachability(level)).toBe(false);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('unsolvable');
+    expect(result.unmodeled).toEqual([]);
   });
 
-  it('partial gravity zone: normal gravity outside, inverted inside', () => {
-    // Left half is normal gravity, right half has a gravity zone.
-    // The player walks normally on the left, enters the zone, and
-    // continues on inverted surfaces.
-    //
-    //   cols: 10, rows: 6
-    //   Row 0: '1111111111' — full ceiling
-    //   Row 1: '1000000000'
-    //   Row 2: '1000010111' — inverted floor with a HATCH at col 6
-    //   Row 3: '1000000000'
-    //   Row 4: '1111100000' — floor left side only
-    //   Row 5: '1111111111' — solid floor
-    //
-    // Zone: cols 5-9, rows 0-4. Pixel: x=80, y=0, w=80, h=80.
-    //
-    // Spawn (1, 3): normal, below (1, 4) = solid ✓
-    // Exit (8, 1): inside zone, above (8, 0) = solid ✓ (inverted)
-    //
-    // Path (physically swept, no clipping solids):
-    //   (1,3) → walk → (4,3) [normal, below=solid ✓]
-    //   → walk → (5,3) [inside zone, above (5,2)=solid ✓ hangs from slab]
-    //   → inverted drop via col 6: slide to (6,3), fall UP through the
-    //     hatch at (6,2), land at (6,1) [above (6,0)=solid ✓]
-    //   → walk → (8,1) along the hanging corridor.
-    // The hatch is required: without it the row-2 slab seals the exit
-    // corridor and the old test's path clipped the solid at (8,2).
+  it('partial gravity zone grants no inverted traversal', () => {
+    // Left half normal, right half zoned. The exit corridor hangs from
+    // the ceiling and is only enterable upside-down; in normal gravity
+    // the row-2 slab seals it (the hatch leads nowhere without upward
+    // falls), so the BFS must fail and the verdict must be withheld
+    // because of the declared zone.
     const level = loadLevel({
       name: 'partial-gravity',
       cols: 10, rows: 6,
@@ -616,16 +603,21 @@ describe('reachability with gravity inversion', () => {
         },
       ],
     });
-    expect(validateReachability(level)).toBe(true);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('not-modelled');
+    expect(result.unmodeled).toContain('gravity-zone');
   });
 
   it('partial gravity zone WITHOUT the zone is unreachable', () => {
-    // Same hatched geometry but no gravity zone. The exit at (8, 1) has no
-    // surface below in normal gravity (row 2 col 8 = solid ABOVE it, not
-    // below), and nothing lifts the player to the row-1 corridor: the
-    // right side has no floor (row 4 cols 5-9 empty), the row-1 cells sit
-    // under a solid ceiling, and every jump envelope into row 1 clips the
-    // row-2 slab or the ceiling. Verified unreachable.
+    // Same hatched geometry but no gravity zone: no unmodelled mechanic,
+    // so the failed flood-fill is a plain unsolvable verdict. The exit
+    // at (8, 1) has no surface below in normal gravity (row 2 col 8 =
+    // solid ABOVE it, not below), and nothing lifts the player to the
+    // row-1 corridor: the right side has no floor (row 4 cols 5-9
+    // empty), the row-1 cells sit under a solid ceiling, and every jump
+    // envelope into row 1 clips the row-2 slab or the ceiling. Verified
+    // unreachable.
     const level = loadLevel({
       name: 'partial-no-zone',
       cols: 10, rows: 6,
@@ -641,7 +633,10 @@ describe('reachability with gravity inversion', () => {
       ],
       traps: [],
     });
-    expect(validateReachability(level)).toBe(false);
+    const result = validateSolvability(level);
+    expect(result.reachable).toBe(false);
+    expect(result.status).toBe('unsolvable');
+    expect(result.unmodeled).toEqual([]);
   });
 });
 
