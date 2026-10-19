@@ -47,5 +47,7 @@ export function getColorblindPalette(enabled: boolean): {
 }
 
 export function getEffectsIntensity(settings: AccessibilitySettings): number {
-  return settings.reducedMotion ? 0.3 : 1.0;
+  // Reduced motion ZEROES effects (issue #163 AC): no shake, no particles,
+  // no hit-stop. Deliberately stricter than the previous 0.3 dimming.
+  return settings.reducedMotion ? 0 : 1;
 }

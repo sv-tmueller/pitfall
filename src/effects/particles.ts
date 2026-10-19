@@ -2,6 +2,7 @@
 // Cosmetic only; particles are FillRects in the effects layer.
 
 import { createPrng } from '../engine/prng';
+import type { PaletteToken } from '../render/palette';
 
 export interface Particle {
   x: number;
@@ -10,7 +11,8 @@ export interface Particle {
   vy: number;
   life: number;
   maxLife: number;
-  color: string;
+  /** Palette token, not a hex string: particles render as FillRects. */
+  color: PaletteToken;
   size: number;
 }
 
@@ -32,7 +34,7 @@ export function burst(
   x: number,
   y: number,
   count: number,
-  color: string,
+  color: PaletteToken,
 ): ParticleSystem {
   if (system.intensity <= 0) return system;
   const scaledCount = Math.round(count * system.intensity);

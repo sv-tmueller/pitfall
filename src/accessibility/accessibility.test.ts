@@ -30,10 +30,10 @@ describe('accessibility', () => {
     expect(getColorblindPalette(false).outlineTiles).toBe(false);
   });
 
-  it('getEffectsIntensity reduces with reduced motion', () => {
+  it('getEffectsIntensity zeroes effects under reduced motion', () => {
     const normal = getEffectsIntensity(createAccessibilitySettings(false));
     const reduced = getEffectsIntensity(createAccessibilitySettings(true));
-    expect(reduced).toBeLessThan(normal);
-    expect(reduced).toBe(0.3);
+    expect(normal).toBe(1);
+    expect(reduced).toBe(0);
   });
 });
