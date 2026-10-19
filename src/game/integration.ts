@@ -5,6 +5,7 @@ import type { LoadedAtlas } from '../render/atlas-loader';
 import type { BlitContext } from '../render/batcher';
 import { computeCamera } from '../render/camera';
 import { renderFrame, type EntitySnapshot, type RenderWorld } from '../render/renderer';
+import { interpolate } from '../render/model';
 import {
   createAnimTrack,
   currentFrame,
@@ -19,6 +20,14 @@ import {
   type SceneState,
 } from './scene';
 import type { LevelSource } from './sequence';
+import { SNAP_DISTANCE } from './constants';
+
+/** Squared distance between two body origins. */
+function bodyDistSq(a: Body, b: Body): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
 
 export interface GameOptions {
   readonly sources: readonly LevelSource[];
@@ -79,6 +88,13 @@ export function stepGame(state: GameState, dt: number): GameState {
   const newScene = stepScene(state.scene, actions, dt);
 
   const body = newScene.controller.body;
+
+  // Snap rule: a discontinuous relocation (respawn, level advance,
+  // teleporter) exceeds SNAP_DISTANCE in one step. Overwrite prevBody so
+  // interpolation starts from the new position instead of smearing across
+  // the gap. Legitimate movement is bounded by terminalVel * DT (~6.7 px).
+  const snappedPrev =
+    bodyDistSq(prevBody, body) > SNAP_DISTANCE * SNAP_DISTANCE ? body : prevBody;
   const newTrack = stepAnimation(
     state.animTrack,
     body.grounded,
@@ -92,7 +108,7 @@ export function stepGame(state: GameState, dt: number): GameState {
     input: state.input,
     atlas: state.atlas,
     animTrack: newTrack,
-    prevBody,
+    prevBody: snappedPrev,
   };
   return state.callbacks !== undefined
     ? { ...base, callbacks: state.callbacks }
@@ -103,8 +119,11 @@ export function renderGame(state: GameState, ctx: BlitContext, alpha: number): v
   const body = state.scene.controller.body;
   const level = state.scene.level;
 
-  const centerX = body.x + body.width / 2;
-  const centerY = body.y + body.height / 2;
+  // Camera follows the INTERPOLATED body so the camera and the sprite agree
+  // at every alpha; computeCamera rounds to whole pixels.
+  const pos = interpolate(state.prevBody, body, alpha);
+  const centerX = pos.x + body.width / 2;
+  const centerY = pos.y + body.height / 2;
   const camera = computeCamera(centerX, centerY, level.cols * 16, level.rows * 16);
 
   const frame = currentFrame(state.animTrack);

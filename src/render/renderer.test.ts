@@ -26,6 +26,7 @@ function createMockCtx(): BlitContext & {
     calls,
     fillStyle: '',
     font: '',
+    imageSmoothingEnabled: true,
     drawImage: (...args: unknown[]) => calls.push({ method: 'drawImage', args }),
     fillRect: (...args: unknown[]) => calls.push({ method: 'fillRect', args }),
     fillText: (...args: unknown[]) => calls.push({ method: 'fillText', args }),

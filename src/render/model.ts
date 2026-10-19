@@ -41,7 +41,7 @@ export interface DrawText {
 }
 
 export interface RenderLayer {
-  readonly kind: 'world' | 'entities' | 'effects' | 'hud';
+  readonly kind: 'world' | 'dynamics' | 'entities' | 'effects' | 'hud';
   readonly sprites: readonly DrawSprite[];
   readonly rects: readonly FillRect[];
   readonly texts: readonly DrawText[];
@@ -84,23 +84,32 @@ export function interpolate(prev: Vec2, curr: Vec2, alpha: number): Vec2 {
 }
 
 /**
+ * Rounds to whole pixels so the batcher never samples at fractional coords.
+ */
+function snap(v: number): number {
+  return Math.round(v);
+}
+
+/**
  * Builds the world tile layer from visible tiles within the camera viewport.
  *
- * Draws four categories, all culled to the 320×180 viewport:
+ * Draws three categories, all culled to the 320×180 viewport:
  *   1. Static tiles from `world.tiles` (the physics grid):
  *        Solid  -> tile.solid.top (if cell above is empty/oneway) or tile.solid.fill
  *        OneWay -> tile.oneway
  *        Empty  -> skipped (Hazard was converted to Empty; rendered as hazard below)
  *   2. Exit door sprite at `world.exit`
  *   3. Hazard sprites from `world.hazards` (pixel-space rects → hazard.spikes)
- *   4. Dynamic solid fill-rects from `world.dynamicSolids`
+ *
+ * Dynamic solid fill-rects are emitted separately by
+ * {@link buildDynamicSolidRects} so they can occupy their own layer above
+ * the tile sprites.
  */
 export function buildTileLayer(
   world: RenderWorld,
   camera: Camera,
 ): { sprites: DrawSprite[]; rects: FillRect[] } {
   const sprites: DrawSprite[] = [];
-  const rects: FillRect[] = [];
 
   const startCol = Math.max(0, Math.floor(camera.x / TILE_SIZE));
   const endCol = Math.min(
@@ -190,7 +199,21 @@ export function buildTileLayer(
     }
   }
 
-  // --- 4. Dynamic solid fill-rects ---
+  // --- 4. Dynamic solid fill-rects: see buildDynamicSolidRects ---
+  return { sprites, rects: [] };
+}
+
+/**
+ * Dynamic solid fill-rects, culled to the viewport. Emitted into their own
+ * 'dynamics' layer so crushers and moving platforms render ABOVE tile
+ * sprites instead of underneath them.
+ */
+export function buildDynamicSolidRects(
+  world: RenderWorld,
+  camera: Camera,
+): FillRect[] {
+  const rects: FillRect[] = [];
+
   for (const ds of world.dynamicSolids) {
     if (!ds.solid) continue;
     const rx = ds.x - camera.x;
@@ -212,7 +235,7 @@ export function buildTileLayer(
     }
   }
 
-  return { sprites, rects };
+  return rects;
 }
 
 /**
@@ -263,8 +286,8 @@ export function buildEntitySprites(
 
     sprites.push({
       frame: ent.frame,
-      dstX: interpX - frameInfo.origin.x - camera.x,
-      dstY: interpY - frameInfo.origin.y - camera.y,
+      dstX: snap(interpX - frameInfo.origin.x - camera.x),
+      dstY: snap(interpY - frameInfo.origin.y - camera.y),
       flipX: ent.flipX,
     });
   }
@@ -291,8 +314,10 @@ export function buildHudLayer(levelIndex: number): DrawText[] {
 }
 
 /**
- * Composes the full render model: clear=void, layers=[world, entities,
- * effects, hud] in FIXED order.
+ * Composes the full render model: clear=void, layers=[world, dynamics,
+ * entities, effects, hud] in FIXED order. Dynamics sit above tiles so
+ * moving solids are never painted underneath them, and below entities so
+ * the player stays visible while riding a platform.
  */
 export function buildRenderModel(
   world: RenderWorld,
@@ -304,6 +329,7 @@ export function buildRenderModel(
   levelIndex: number,
 ): RenderModel {
   const worldLayer = buildTileLayer(world, camera);
+  const dynamicRects = buildDynamicSolidRects(world, camera);
   const entitySprites = buildEntitySprites(
     entities,
     prevEntities,
@@ -317,6 +343,7 @@ export function buildRenderModel(
     clear: 'void',
     layers: [
       { kind: 'world', sprites: worldLayer.sprites, rects: worldLayer.rects, texts: [] },
+      { kind: 'dynamics', sprites: [], rects: dynamicRects, texts: [] },
       { kind: 'entities', sprites: entitySprites, rects: [], texts: [] },
       { kind: 'effects', sprites: [], rects: [], texts: [] },
       { kind: 'hud', sprites: [], rects: [], texts: hudTexts },

@@ -54,4 +54,13 @@ describe('computeCamera', () => {
     expect(cx).toBe(500);
     expect(cy).toBe(300);
   });
+
+  it('rounds fractional target centers to whole pixels', () => {
+    // Interpolated centers arrive fractional; the camera must snap to ints.
+    const cam = computeCamera(500.7, 300.4, 1000, 600);
+    expect(Number.isInteger(cam.x)).toBe(true);
+    expect(Number.isInteger(cam.y)).toBe(true);
+    expect(cam.x).toBe(341); // 500.7 - 160 = 340.7 -> 341
+    expect(cam.y).toBe(210); // 300.4 - 90 = 210.4 -> 210
+  });
 });

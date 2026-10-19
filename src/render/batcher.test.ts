@@ -26,6 +26,7 @@ function createMockCtx(): BlitContext & {
     calls,
     fillStyle: '',
     font: '',
+    imageSmoothingEnabled: true,
     drawImage: (...args: unknown[]) => calls.push({ method: 'drawImage', args }),
     fillRect: (...args: unknown[]) => calls.push({ method: 'fillRect', args }),
     fillText: (...args: unknown[]) => calls.push({ method: 'fillText', args }),
@@ -44,6 +45,18 @@ function findCalls(ctx: { calls: RecordedCall[] }, method: string): RecordedCall
 }
 
 describe('flushModel', () => {
+  it('disables image smoothing on the blit context', () => {
+    const ctx = createMockCtx();
+    const model: RenderModel = {
+      clear: 'void',
+      layers: [],
+    };
+
+    flushModel(ctx, model, ATLAS);
+
+    expect(ctx.imageSmoothingEnabled).toBe(false);
+  });
+
   it('clears the backbuffer first with the clear color', () => {
     const ctx = createMockCtx();
     const model: RenderModel = {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import atlasManifest from '../../assets/atlas.json';
 import { loadAtlas, type BitmapLike } from './atlas-loader';
 import {
+  buildDynamicSolidRects,
   buildEntitySprites,
   buildHudLayer,
   buildRenderModel,
@@ -189,6 +190,9 @@ describe('buildTileLayer', () => {
     expect(hazardSprites).toHaveLength(0);
   });
 
+});
+
+describe('buildDynamicSolidRects', () => {
   it('renders non-lethal dynamic solids as FillRect with edge color', () => {
     const ds: DynamicSolid = {
       id: 'ds1',
@@ -202,7 +206,7 @@ describe('buildTileLayer', () => {
       lethal: false,
     };
     const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
-    const { rects } = buildTileLayer(world, { x: 0, y: 0 });
+    const rects = buildDynamicSolidRects(world, { x: 0, y: 0 });
 
     expect(rects).toHaveLength(1);
     expect(rects[0]!.color).toBe('edge');
@@ -225,7 +229,7 @@ describe('buildTileLayer', () => {
       lethal: true,
     };
     const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
-    const { rects } = buildTileLayer(world, { x: 0, y: 0 });
+    const rects = buildDynamicSolidRects(world, { x: 0, y: 0 });
 
     expect(rects).toHaveLength(1);
     expect(rects[0]!.color).toBe('lethal');
@@ -244,7 +248,7 @@ describe('buildTileLayer', () => {
       lethal: false,
     };
     const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
-    const { rects } = buildTileLayer(world, { x: 0, y: 0 });
+    const rects = buildDynamicSolidRects(world, { x: 0, y: 0 });
     expect(rects).toHaveLength(0);
   });
 
@@ -261,7 +265,7 @@ describe('buildTileLayer', () => {
       lethal: false,
     };
     const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
-    const { rects } = buildTileLayer(world, { x: 0, y: 0 });
+    const rects = buildDynamicSolidRects(world, { x: 0, y: 0 });
     expect(rects).toHaveLength(0);
   });
 });
@@ -338,7 +342,7 @@ describe('buildEntitySprites', () => {
 });
 
 describe('buildRenderModel', () => {
-  it('produces layers in fixed order: world, entities, effects', () => {
+  it('produces layers in fixed order: world, dynamics, entities, effects, hud', () => {
     const world = makeWorld(['1'], { exit: { col: 100, row: 100 } });
     const model = buildRenderModel(
       world,
@@ -350,10 +354,14 @@ describe('buildRenderModel', () => {
       0,
     );
 
-    expect(model.layers).toHaveLength(4);
-    expect(model.layers[0]!.kind).toBe('world');
-    expect(model.layers[1]!.kind).toBe('entities');
-    expect(model.layers[2]!.kind).toBe('effects');
+    expect(model.layers).toHaveLength(5);
+    expect(model.layers.map((l) => l.kind)).toEqual([
+      'world',
+      'dynamics',
+      'entities',
+      'effects',
+      'hud',
+    ]);
   });
 
   it('clears with void palette token', () => {
@@ -400,7 +408,7 @@ describe('buildRenderModel', () => {
       ATLAS,
       0,
     );
-    expect(model.layers[1]!.sprites).toHaveLength(1);
+    expect(model.layers[2]!.sprites).toHaveLength(1);
   });
 
   it('effects layer is always empty for now', () => {
@@ -414,11 +422,11 @@ describe('buildRenderModel', () => {
       ATLAS,
       0,
     );
-    expect(model.layers[2]!.sprites).toHaveLength(0);
-    expect(model.layers[2]!.rects).toHaveLength(0);
+    expect(model.layers[3]!.sprites).toHaveLength(0);
+    expect(model.layers[3]!.rects).toHaveLength(0);
   });
 
-  it('passes dynamic solid rects through to world layer', () => {
+  it('routes dynamic solid rects to the dynamics layer, above tiles', () => {
     const ds: DynamicSolid = {
       id: 'ds1',
       x: 0,
@@ -432,10 +440,39 @@ describe('buildRenderModel', () => {
     };
     const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
     const model = buildRenderModel(world, { x: 0, y: 0 }, [], [], 0, ATLAS, 0);
-    expect(model.layers[0]!.rects).toHaveLength(1);
+    expect(model.layers[0]!.rects).toHaveLength(0);
+    expect(model.layers[1]!.kind).toBe('dynamics');
+    expect(model.layers[1]!.rects).toHaveLength(1);
   });
 
-  it('includes hud layer as 4th layer with level text', () => {
+  it('rounds entity dst coords to whole pixels', () => {
+    const world = makeWorld(['0'], { exit: { col: 100, row: 100 } });
+    const curr: EntitySnapshot = {
+      body: { x: 100, y: 50, width: 16, height: 24 },
+      frame: 'player.idle.0',
+      flipX: false,
+    };
+    const prev: EntitySnapshot = {
+      body: { x: 50.4, y: 10.6, width: 16, height: 24 },
+      frame: 'player.idle.0',
+      flipX: false,
+    };
+    const model = buildRenderModel(
+      world,
+      { x: 0.2, y: 0.2 },
+      [curr],
+      [prev],
+      0.5,
+      ATLAS,
+      0,
+    );
+    const sprite = model.layers[2]!.sprites[0];
+    expect(sprite).toBeDefined();
+    expect(Number.isInteger(sprite!.dstX)).toBe(true);
+    expect(Number.isInteger(sprite!.dstY)).toBe(true);
+  });
+
+  it('includes hud layer as 5th layer with level text', () => {
     const world = makeWorld(['0'], { exit: { col: 100, row: 100 } });
     const model = buildRenderModel(
       world,
@@ -446,10 +483,10 @@ describe('buildRenderModel', () => {
       ATLAS,
       0,
     );
-    expect(model.layers).toHaveLength(4);
-    expect(model.layers[3]!.kind).toBe('hud');
-    expect(model.layers[3]!.texts).toHaveLength(1);
-    expect(model.layers[3]!.texts[0]!.text).toBe('Level 1');
+    expect(model.layers).toHaveLength(5);
+    expect(model.layers[4]!.kind).toBe('hud');
+    expect(model.layers[4]!.texts).toHaveLength(1);
+    expect(model.layers[4]!.texts[0]!.text).toBe('Level 1');
   });
 
   it('hud layer reflects levelIndex in text', () => {
@@ -463,7 +500,7 @@ describe('buildRenderModel', () => {
       ATLAS,
       44,
     );
-    expect(model.layers[3]!.texts[0]!.text).toBe('Level 45');
+    expect(model.layers[4]!.texts[0]!.text).toBe('Level 45');
   });
 
   it('hud layer texts use bone color', () => {
@@ -477,7 +514,7 @@ describe('buildRenderModel', () => {
       ATLAS,
       0,
     );
-    expect(model.layers[3]!.texts[0]!.color).toBe('bone');
+    expect(model.layers[4]!.texts[0]!.color).toBe('bone');
   });
 });
 
