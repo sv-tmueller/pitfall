@@ -92,6 +92,9 @@ const NORMAL_JUMP_VEL_ABS = 260;
 // controller can sustain. Arcs demanding more are physically unflyable.
 const CONTROLLER_MAX_RUN = 120;
 
+// ACCEL from src/engine/controller.ts: ground/air horizontal acceleration.
+const CONTROLLER_ACCEL = 800;
+
 // ---------------------------------------------------------------------------
 // Grid wrapper with optional standable overrides (moving platforms) and
 // gravity-zone awareness.
@@ -199,22 +202,29 @@ function isInvertedRegion(grid: ValidatorGrid, col: number, row: number): boolea
  *    MAX_FLAT_GAP tiles of lateral drift scaled by the drop's horizontal
  *    allowance.
  *
- * The combined horizontal+vertical envelope for upward jumps is:
- *   |dc| / MAX_FLAT_GAP + rise / MAX_RISE <= 1
- * ensuring a max-rise jump (2 tiles up) permits little lateral travel, while
- * a flat jump (0 rise) permits the full MAX_FLAT_GAP.
+ * Rising-jump lateral allowances are KINEMATIC (issue #161): a jump that
+ * rises R tiles lands after t = (v + sqrt(v^2 - 2 g R')) / g seconds
+ * (descending root, v = 260, g = 900, R' = 16R px), during which the
+ * controller can cover MAX_RUN * t pixels horizontally:
+ *   rise 0: t = 0.578 s -> 4.3 tiles -> lat 4
+ *   rise 1: t = 0.508 s -> 3.8 tiles -> lat 3
+ *   rise 2: t = 0.400 s -> 3.0 tiles -> lat 3
+ * The old heuristic (|dc| / MAX_FLAT_GAP + rise / MAX_RISE <= 1) forbade
+ * ANY lateral travel on a 2-tile rise, which real physics disproves: the
+ * swept arc family plus the MAX_RUN cap now guards soundness, so the
+ * envelope only enumerates candidates.
  */
-function jumpNeighbors(): Array<{ dc: number; dr: number }> {
+export function jumpNeighbors(): Array<{ dc: number; dr: number }> {
   const neighbors: Array<{ dc: number; dr: number }> = [];
 
   // Walking: 1 tile left/right at the same row.
   neighbors.push({ dc: -1, dr: 0 });
   neighbors.push({ dc: 1, dr: 0 });
 
-  // Upward and level jumps: rise in [0..MAX_RISE], lateral in [-MAX_FLAT_GAP..MAX_FLAT_GAP],
-  // constrained by the combined envelope.
+  // Upward and level jumps: kinematic lateral allowance per rise.
+  const RISING_LAT: ReadonlyArray<number> = [MAX_FLAT_GAP, 3, 3];
   for (let rise = 0; rise <= MAX_RISE; rise++) {
-    const maxLat = Math.floor(MAX_FLAT_GAP * (1 - rise / MAX_RISE));
+    const maxLat = RISING_LAT[rise] ?? 0;
     for (let lat = -maxLat; lat <= maxLat; lat++) {
       if (lat === 0 && rise === 0) continue; // already covered by walking
       neighbors.push({ dc: lat, dr: -rise });
@@ -465,24 +475,53 @@ export function sweepEdge(
   // Available only when the rise is within the takeoff impulse's apex
   // (v0^2 / 2g); a wall blocks the traverse, a low ceiling blocks the
   // rise, and the plain arc family already covers unobstructed jumps.
+  //
+  // The traverse is bounded by the time the jump spends at or above the
+  // destination altitude: the interval between crossing that altitude
+  // upward and dropping back below it. Only the distance coverable in
+  // that window (accelerating from rest to MAX_RUN) qualifies; beyond
+  // that the detour would glide, which jump dynamics cannot sustain.
   if (enr < er && (er - enr) * TILE_SIZE <= (jumpVelAbs * jumpVelAbs) / (2 * CONTROLLER_GRAVITY)) {
-    // Leg A: vertical rise in the source column. The launch sample is
-    // skipped: the standing box legitimately overlaps its own support tile.
-    const riseSpan = sy - ey;
-    const riseSamples = Math.max(2, Math.ceil(riseSpan / 2));
-    for (let i = 1; i <= riseSamples; i++) {
-      const y = sy - riseSpan * (i / riseSamples);
-      if (hits(sx, y)) return false;
-    }
-    // Leg B: horizontal traverse at the destination altitude.
-    if (ex !== sx) {
-      const travSamples = Math.max(2, Math.abs(nc - col) * 8);
-      for (let i = 0; i <= travSamples; i++) {
-        const x = sx + (ex - sx) * (i / travSamples);
-        if (hits(x, ey)) return false;
+    const risePx = (er - enr) * TILE_SIZE;
+    // Time from the destination altitude to the apex and back down to it.
+    const vAtAlt = Math.sqrt(jumpVelAbs * jumpVelAbs - 2 * CONTROLLER_GRAVITY * risePx);
+    const tAbove = (2 * vAtAlt) / CONTROLLER_GRAVITY;
+    // Generous horizontal reach while at/above the altitude: accelerate
+    // from rest to MAX_RUN for the whole window.
+    const tToMax = CONTROLLER_MAX_RUN / CONTROLLER_ACCEL;
+    const reach =
+      tAbove <= tToMax
+        ? 0.5 * CONTROLLER_ACCEL * tAbove * tAbove
+        : 0.5 * CONTROLLER_ACCEL * tToMax * tToMax +
+          CONTROLLER_MAX_RUN * (tAbove - tToMax);
+    if (Math.abs(ex - sx) <= reach) {
+      // Leg A: vertical rise in the source column. The launch sample is
+      // skipped: the standing box legitimately overlaps its own support tile.
+      const riseSpan = sy - ey;
+      const riseSamples = Math.max(2, Math.ceil(riseSpan / 2));
+      let riseOk = true;
+      for (let i = 1; i <= riseSamples; i++) {
+        const y = sy - riseSpan * (i / riseSamples);
+        if (hits(sx, y)) {
+          riseOk = false;
+          break;
+        }
       }
+      // Leg B: horizontal traverse at the destination altitude.
+      if (riseOk) {
+        if (ex !== sx) {
+          const travSamples = Math.max(2, Math.abs(nc - col) * 8);
+          for (let i = 0; i <= travSamples; i++) {
+            const x = sx + (ex - sx) * (i / travSamples);
+            if (hits(x, ey)) {
+              riseOk = false;
+              break;
+            }
+          }
+        }
+      }
+      if (riseOk) return true;
     }
-    return true;
   }
 
   // ---- Motion 3 (downward edges only): the walk-off composite -------------
@@ -847,7 +886,7 @@ export function validateReachability(level: LevelData): boolean {
  * The raw BFS flood-fill from spawn to exit. Returns true when the exit is
  * reached through swept, physically feasible edges.
  */
-function bfsReachable(level: LevelData): boolean {
+export function bfsReachable(level: LevelData): boolean {
   const baseGrid = levelToGrid(level);
   const mech = extractMechanics(level);
 
