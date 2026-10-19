@@ -214,9 +214,9 @@ describe('fake-exit levels remain completable', () => {
     // a pure vertical elevator at column 4: it rests flush with the pillar
     // top (y 272), so boarding is wait-only, and it ferries the rider up
     // 64 px to the row-13 one-way ledge (cols 4-5, top y 208). From there
-    // the climb alternates 16-px hops up the west band ladder (rows 13,
-    // 12, 11, ..., 4; odd/even bands are offset one column apart) to the
-    // row-4 corridor, then east along row 4 into the fleeing door's
+    // the climb alternates 16-px hops up the west band ladder (mostly
+    // full-width bands at rows 12/10/8/6/4, narrowing at rows 11 and 7)
+    // to the row-4 corridor, then east along row 4 into the fleeing door's
     // trigger ring near the original exit. Doubling back west reaches the
     // escaped door at (2,1). Inputs are mirrored throughout: the level
     // carries a permanent control-inversion mechanic. If the dock ever
@@ -232,10 +232,10 @@ describe('fake-exit levels remain completable', () => {
     // fires at the pad's west edge, before any pad-centered waypoint's
     // advance window opens). Phases advance on robust physical cues:
     //   floorWalkEast -> (teleport: sudden y drop) -> dockWait ->
-    //   (elevator rests at 272) -> rideHold -> (deposited on row-12 band,
-    //   platform heading down) -> ladderHop -> (body row 4) -> corridorEast
-    //   -> (door fled to (2,1)) -> corridorWest -> (under the door) ->
-    //   doorJump -> entering|complete.
+    //   (elevator rests at 272) -> rideHold -> (deposited on the row-13
+    //   ledge, feet y 208, platform heading down) -> ladderHop -> (body
+    //   row 4) -> corridorEast -> (door fled to (2,1)) -> corridorWest ->
+    //   (under the door) -> doorJump -> entering|complete.
     let phase: 'floorWalkEast' | 'dockWait' | 'rideHold' | 'ladderHop' | 'corridorEast' | 'corridorWest' | 'doorJump' =
       'floorWalkEast';
     const policy = (s: SceneState): SceneActions => {
@@ -250,21 +250,22 @@ describe('fake-exit levels remain completable', () => {
           }
           return { ...idle, right: true };
         case 'dockWait':
-          // Stand still on the dock; board when the elevator rests at the
-          // pillar top. Mirrored: emitted right steers the body west onto
-          // the platform center if the dock nudged it east.
+          // Idle on the dock until the elevator rests at the pillar top.
+          // While it rests, drift west (physical) to shed any landing
+          // momentum; the flush-docked platform picks the body up either
+          // way, so this is belt-and-braces, not the boarding mechanism.
           if (platRest(s) >= 270) return { ...idle, left: true };
           return idle;
         case 'rideHold':
-          // Carried up; released when the body stands on the row-12 band
-          // and the platform has begun its descent (topped out).
+          // Carried up; released when the body stands on the row-13 ledge
+          // (feet y 208) and the platform has begun its descent (topped out).
           if (body.grounded && body.y <= 193 && platRest(s) > 209) {
             phase = 'ladderHop';
           }
           return idle;
         case 'ladderHop': {
           // Hop north up the west band ladder: full-height jumps (held),
-          // aligned to column 3 (cx 40..56), 16 px per landing.
+          // aligned to column 2 (body center cx 40 +- 2), 16 px per landing.
           const aligned = Math.abs(cx - 40) <= 2;
           if (body.grounded && aligned && body.y > 52) {
             return { ...idle, jumpPressed: true, jumpHeld: true };
@@ -360,10 +361,12 @@ describe('fake-exit levels remain completable', () => {
     // Pin 2: the dock is standable - solid support at (row 17, col 4).
     expect(source.tiles[17]![4]).toBe('1');
 
-    // Sanity anchors for the elevator: docks flush with the pillar top.
+    // Sanity anchors for the elevator: docks flush with the pillar top and
+    // couples to the dock (relation, not just absolute constants, so dock or
+    // elevator drift alone trips a pin).
     const plat = source.mechanics.find((m) => m.id === 'finale-platform-left')!;
-    expect(plat.params.startX!).toBe(64);
-    expect(plat.params.startY!).toBe(272);
+    expect(plat.params.startX!).toBe(dock.destX!);
+    expect(plat.params.startY!).toBe(dock.destY! + 16);
     expect(plat.params.dy!).toBe(-64);
     expect(plat.params.distance!).toBe(64);
   });
