@@ -69,6 +69,10 @@ const CONTROLLER_GRAVITY = 900;
 // this vertical speed (springs override it with their impulse).
 const NORMAL_JUMP_VEL_ABS = 260;
 
+// MAX_RUN from src/engine/controller.ts: the fastest horizontal speed the
+// controller can sustain. Arcs demanding more are physically unflyable.
+const CONTROLLER_MAX_RUN = 120;
+
 // ---------------------------------------------------------------------------
 // Grid wrapper with optional standable overrides (moving platforms) and
 // gravity-zone awareness.
@@ -396,6 +400,9 @@ export function sweepEdge(
     if (disc < 0) continue;
     const tLand = (v0 + Math.sqrt(disc)) / CONTROLLER_GRAVITY;
     const vx = (ex - sx) / tLand;
+    // Physical feasibility: the controller cannot exceed MAX_RUN, so an
+    // arc demanding more horizontal speed than that is unflyable.
+    if (vx > CONTROLLER_MAX_RUN) continue;
     const apexY = sy - (v0 * v0) / (2 * CONTROLLER_GRAVITY);
 
     // Bounding box precheck over the full arc. In inverted regions the

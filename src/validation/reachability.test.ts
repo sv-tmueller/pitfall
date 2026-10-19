@@ -19,13 +19,23 @@ describe('reachability validation (physics-calibrated)', () => {
     expect(validateReachability(level)).toBe(true);
   });
 
-  it('walled-off exit is not reachable', () => {
+  it('walled-off exit is not reachable (standable spawn)', () => {
+    // The original walled-off fixture spawned at (0,1) where tile '1' is
+    // solid, so isStandable was false and the validator returned false
+    // vacuously. This version puts the spawn on a real floor so the
+    // rejection exercises the traversal logic: a full-height wall seals
+    // the exit chamber, and no walk, jump, or drop crosses it.
     const veryBlocked = loadLevel({
       name: 'very-blocked',
-      cols: 10, rows: 3,
-      spawn: { col: 0, row: 1 },
-      exit: { col: 9, row: 1 },
-      tiles: ['1111111111', '1011111001', '1111111111'],
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 9, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1011111001',
+        '1111111111',
+      ],
       traps: [],
     });
     expect(validateReachability(veryBlocked)).toBe(false);
@@ -624,5 +634,156 @@ describe('reachability with gravity inversion', () => {
       traps: [],
     });
     expect(validateReachability(level)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Swept-path obstruction regressions (issue #161 CP2)
+//
+// The pre-sweep validator only checked solids in the source column of
+// upward jumps. These cases pin the classes of edge it waved through:
+// lateral jumps through walls, drops through overhangs, walks through
+// walls, plus positive controls proving the sweep still certifies
+// ordinary arcs.
+// ---------------------------------------------------------------------------
+
+describe('swept-path obstruction regressions (#161)', () => {
+  it('lateral jump through a full-height wall is NOT reachable', () => {
+    // Two chambers separated by a full-height wall block (rows 0-1 solid,
+    // wall column sealing row 2). Same floor row, so the exit is a flat
+    // lateral jump away (well inside the envelope), but every arc from
+    // row 2 rises into the solid ceiling and no walk crosses the wall.
+    // The pre-sweep validator accepted the flat jump and called this
+    // reachable.
+    const level = loadLevel({
+      name: 'wall-between',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1111111111',
+        '1000000101',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('drop onto a ledge THROUGH a solid overhang is NOT reachable', () => {
+    // The exit sits on a ledge sheltered by a solid overhang (row 3,
+    // cols 4-9). From the spawn plateau (row 2, cols 0-3) the only
+    // envelope route down is a drop with lateral drift, and every such
+    // fall clips the overhang. The pre-sweep validator never checked
+    // drops for solids and called this reachable.
+    //
+    //   Row 0: ceiling
+    //   Row 1: open; spawn (1,1) stands on the plateau
+    //   Row 2: plateau cols 0-3 solid; overhang top cols 4-8 standable
+    //   Row 3: OVERHANG cols 4-9 solid
+    //   Row 4: open under the overhang; exit (7,4)
+    //   Row 5: ledge cols 4-9 solid
+    //   Row 6: floor
+    const level = loadLevel({
+      name: 'overhang-drop',
+      cols: 10, rows: 7,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 7, row: 4 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1111000001',
+        '0000111111',
+        '0000000000',
+        '0000111111',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('walk blocked by a 1-tile wall is NOT reachable', () => {
+    // Flat corridor whose open row is exactly one tile high: a waist-high
+    // solid at col 4 blocks walking, and the sealed headroom (rows 0-1
+    // solid) leaves no room to arc over it. The pre-sweep validator leapt
+    // the wall with an unchecked flat jump and called this reachable.
+    const level = loadLevel({
+      name: 'waist-wall',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1111111111',
+        '1000100001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('positive control: arc over a 1-tile obstacle succeeds', () => {
+    // Same corridor as the waist-wall case but with headroom: the ceiling
+    // is two rows above the floor, leaving space to arc over the single
+    // obstacle tile. The sweep must certify this hop.
+    const level = loadLevel({
+      name: 'hop-over',
+      cols: 10, rows: 4,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1000100001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(true);
+  });
+
+  it('positive control: plain flat jump across a gap succeeds', () => {
+    // A 3-tile gap in the floor at the same row: squarely inside the
+    // 4-tile envelope, no obstructions. Must stay reachable.
+    const level = loadLevel({
+      name: 'plain-gap',
+      cols: 10, rows: 4,
+      spawn: { col: 2, row: 2 },
+      exit: { col: 8, row: 2 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1001110001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(true);
+  });
+
+  it('positive control: drop down a clear shaft with drift succeeds', () => {
+    // Spawn on an upper ledge, exit on the floor below and 3 columns
+    // across, with open air the whole way. The walked-off composite must
+    // certify it.
+    const level = loadLevel({
+      name: 'clear-drop',
+      cols: 10, rows: 7,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 5, row: 5 },
+      tiles: [
+        '1111111111',
+        '1000000000',
+        '1111100000',
+        '1000000000',
+        '1000000000',
+        '1000000000',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(true);
   });
 });
