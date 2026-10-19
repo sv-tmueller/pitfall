@@ -10,6 +10,7 @@ import { createMemoryStorage, type SaveStorage } from '../save/storage';
 import { getCurrentPosition, loadSave, saveSave } from '../save/repository';
 import { SAVE_SCHEMA_VERSION, type SavePayload } from '../save/schema';
 import { createGame, type GameState } from './integration';
+import { getAllStats } from '../stats/stats';
 import type { SceneCallbacks } from './scene';
 import type { LevelSource } from './sequence';
 import {
@@ -90,6 +91,12 @@ class FakeAdapter implements GameAdapter {
   readonly rendered: number[] = [];
   callbacks: SceneCallbacks | null = null;
   deathsToAdd = 0;
+  /**
+   * Absolute-in-level knob: the next step returns a state whose
+   * scene.sequence.index is set to this value. onLevelComplete alone does not
+   * move the index the shell polls, so advance tests need this.
+   */
+  advanceToIndex: number | null = null;
 
   create(
     opts: Parameters<GameAdapter['create']>[0],
@@ -111,20 +118,21 @@ class FakeAdapter implements GameAdapter {
   step(state: GameState, dt: number): GameState {
     void dt;
     this.stepped.push(state.input.sample());
-    if (this.deathsToAdd > 0) {
-      const add = this.deathsToAdd;
-      this.deathsToAdd = 0;
-      const scene = state.scene;
-      return {
-        ...state,
-        scene: {
-          ...scene,
-          deathsThisLevel: scene.deathsThisLevel + add,
-          deathsTotal: scene.deathsTotal + add,
-        },
-      };
-    }
-    return state;
+    const advance = this.advanceToIndex;
+    const deaths = this.deathsToAdd;
+    if (advance === null && deaths === 0) return state;
+    this.advanceToIndex = null;
+    this.deathsToAdd = 0;
+    const scene = state.scene;
+    return {
+      ...state,
+      scene: {
+        ...scene,
+        sequence: advance === null ? scene.sequence : { ...scene.sequence, index: advance },
+        deathsThisLevel: scene.deathsThisLevel + deaths,
+        deathsTotal: scene.deathsTotal + deaths,
+      },
+    };
   }
 
   render(): void {
@@ -497,6 +505,133 @@ describe('app shell', () => {
 
     app.stop();
     expect(manual.stopped()).toBe(true);
+  });
+});
+
+describe('app shell attempt stats', () => {
+  it('records one attempt when play begins at the first level', () => {
+    const { app, input } = makeApp();
+    startPlaying(app, input);
+    app.step(DT);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+  });
+
+  it('records one attempt per level entry, not per step or respawn', () => {
+    const { app, input, adapter } = makeApp();
+    startPlaying(app, input);
+    app.step(DT);
+    app.step(DT);
+    app.step(DT);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+
+    // A new absolute level index is a new entry and counts once.
+    adapter.advanceToIndex = 1;
+    app.step(DT);
+    expect(app.save.levels[levelKey(1)]?.attemptCount).toBe(1);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+
+    // Revisiting the same index across steps must not double-record.
+    app.step(DT);
+    app.step(DT);
+    expect(app.save.levels[levelKey(1)]?.attemptCount).toBe(1);
+  });
+
+  it('persists attempts and feeds them into the aggregate stats', () => {
+    const storage = createMemoryStorage();
+    const { app, input, adapter } = makeApp({ storage });
+    startPlaying(app, input);
+    app.step(DT);
+    adapter.advanceToIndex = 1;
+    app.step(DT);
+
+    expect(loadSave(storage).levels[levelKey(0)]?.attemptCount).toBe(1);
+    expect(getAllStats(loadSave(storage)).totalAttempts).toBe(2);
+  });
+
+  it('resets the attempt ledger when a replay starts at the same index', () => {
+    // Pins the lastAttemptedIndex reset in startCampaign: the end-screen
+    // replay path calls startCampaign('new') on the SAME app instance, and
+    // the replayed campaign starts at the same absolute index (0) the
+    // finished one last attempted. Without the reset the ledger still holds
+    // 0 from the previous campaign and the replay's first entry is skipped.
+    const { app, input, adapter } = makeApp();
+    startPlaying(app, input);
+    app.step(DT);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+
+    // Finish the campaign: the shell lands on the end screen.
+    adapter.callbacks?.onLevelComplete?.(0);
+    app.step(DT);
+    adapter.callbacks?.onSequenceComplete?.();
+    app.step(DT);
+    expect(app.screen).toBe('end');
+
+    // Replay from the end screen: same instance, same start index. The
+    // transition step is drained (like the title transition), and the
+    // replay clears the save (mode new), so the ledger restarts and the
+    // first entry records a fresh 1 - not a skipped undefined.
+    input.keyDown('Enter');
+    app.step(DT);
+    input.keyUp('Enter');
+    expect(app.screen).toBe('playing');
+    app.step(DT);
+    expect(app.save.levels[levelKey(0)]?.attemptCount).toBe(1);
+  });
+});
+
+describe('app shell finished campaign', () => {
+  /** Play the two-fixture campaign to completion through the adapter callbacks. */
+  function playToEnd(app: App, input: ReturnType<typeof createKeyboardInput>, adapter: FakeAdapter): void {
+    startPlaying(app, input);
+    adapter.deathsToAdd = 3;
+    app.step(DT);
+    for (let index = 0; index < SOURCES.length; index++) {
+      adapter.callbacks?.onLevelComplete?.(index);
+      app.step(DT);
+    }
+    adapter.callbacks?.onSequenceComplete?.();
+    app.step(DT);
+  }
+
+  it('shows the end screen once every level is complete', () => {
+    const { app, input, adapter } = makeApp();
+    playToEnd(app, input, adapter);
+    expect(app.screen).toBe('end');
+    expect(app.end?.totalDeaths).toBe(3);
+  });
+
+  it('routes CONTINUE to the end screen when the final level is complete', () => {
+    const storage = createMemoryStorage();
+    const first = makeApp({ storage });
+    playToEnd(first.app, first.input, first.adapter);
+    expect(first.app.screen).toBe('end');
+
+    const second = makeApp({ storage });
+    expect(second.app.title.hasProgress).toBe(true);
+    startPlaying(second.app, second.input);
+
+    expect(second.app.screen).toBe('end');
+    expect(second.app.end?.totalDeaths).toBe(sumDeaths(loadSave(storage)));
+    expect(second.app.end?.totalDeaths).toBe(3);
+    // No new game was created: CONTINUE went straight to the end screen.
+    expect(second.adapter.created).toHaveLength(0);
+  });
+
+  it('still replays from the finished end screen with a new campaign', () => {
+    const storage = createMemoryStorage();
+    const first = makeApp({ storage });
+    playToEnd(first.app, first.input, first.adapter);
+
+    const second = makeApp({ storage });
+    startPlaying(second.app, second.input);
+    expect(second.app.screen).toBe('end');
+
+    second.input.keyDown('Space');
+    second.app.step(DT);
+    second.input.keyUp('Space');
+    expect(second.app.screen).toBe('playing');
+    expect(second.app.save.levels).toEqual({});
+    expect(second.adapter.created).toHaveLength(1);
   });
 });
 
