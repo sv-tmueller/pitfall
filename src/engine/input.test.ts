@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_BINDINGS,
+  attachClickConfirm,
   attachKeyboardInput,
   createKeyboardInput,
+  type ConfirmEventSource,
+  type ConfirmPointerEventType,
   type InputAction,
   type KeyEventLike,
   type KeyEventSource,
@@ -156,7 +159,14 @@ describe('createKeyboardInput multi-code actions and blur', () => {
     const snapshot = input.sample();
 
     expect(input.isBound('KeyZ')).toBe(false);
-    for (const action of ['left', 'right', 'jump', 'restart', 'pause'] satisfies InputAction[]) {
+    for (const action of [
+      'left',
+      'right',
+      'jump',
+      'restart',
+      'pause',
+      'confirm',
+    ] satisfies InputAction[]) {
       expect(snapshot.held[action]).toBe(false);
       expect(snapshot.pressed[action]).toBe(false);
       expect(snapshot.released[action]).toBe(false);
@@ -168,7 +178,14 @@ describe('createKeyboardInput multi-code actions and blur', () => {
 
     const snapshot = input.sample();
 
-    for (const action of ['left', 'right', 'jump', 'restart', 'pause'] satisfies InputAction[]) {
+    for (const action of [
+      'left',
+      'right',
+      'jump',
+      'restart',
+      'pause',
+      'confirm',
+    ] satisfies InputAction[]) {
       expect(snapshot.held[action]).toBe(false);
       expect(snapshot.pressed[action]).toBe(false);
       expect(snapshot.released[action]).toBe(false);
@@ -195,6 +212,12 @@ describe('DEFAULT_BINDINGS', () => {
     expect(DEFAULT_BINDINGS.right).toEqual(expect.arrayContaining(['ArrowRight', 'KeyD']));
     expect(DEFAULT_BINDINGS.jump).toEqual(expect.arrayContaining(['Space', 'ArrowUp']));
     expect(DEFAULT_BINDINGS.restart).toEqual(expect.arrayContaining(['KeyR']));
+  });
+
+  it('binds confirm to both Enter keys and leaves jump untouched (AC-1)', () => {
+    expect(DEFAULT_BINDINGS.confirm).toEqual(['Enter', 'NumpadEnter']);
+    expect(DEFAULT_BINDINGS.jump).not.toContain('Enter');
+    expect(DEFAULT_BINDINGS.jump).not.toContain('NumpadEnter');
   });
 });
 
@@ -281,5 +304,191 @@ describe('InputSnapshot immutability', () => {
     expect(first.held).not.toBe(second.held);
     expect(first.pressed).not.toBe(second.pressed);
     expect(first.released).not.toBe(second.released);
+  });
+});
+
+function createStubClickSource(): ConfirmEventSource & {
+  emit(type: ConfirmPointerEventType): void;
+  listenerCount(type: ConfirmPointerEventType): number;
+  capturedIds(): number[];
+} {
+  const listeners = new Map<ConfirmPointerEventType, Set<(event: Event) => void>>([
+    ['pointerdown', new Set()],
+    ['pointerup', new Set()],
+    ['pointercancel', new Set()],
+    ['blur', new Set()],
+    ['lostpointercapture', new Set()],
+  ]);
+  const captured: number[] = [];
+
+  return {
+    addEventListener(type, listener) {
+      listeners.get(type)?.add(listener);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
+    emit(type) {
+      for (const listener of listeners.get(type) ?? []) {
+        listener(new Event(type));
+      }
+    },
+    listenerCount(type) {
+      return listeners.get(type)?.size ?? 0;
+    },
+    capturedIds() {
+      return [...captured];
+    },
+    setPointerCapture(pointerId: number) {
+      captured.push(pointerId);
+    },
+  };
+}
+
+describe('confirm action', () => {
+  it('reports a pressed edge for Enter and clears it on the next sample', () => {
+    const input = createKeyboardInput();
+
+    input.keyDown('Enter');
+    const first = input.sample();
+    expect(first.pressed.confirm).toBe(true);
+    expect(first.held.confirm).toBe(true);
+
+    const second = input.sample();
+    expect(second.pressed.confirm).toBe(false);
+    expect(second.held.confirm).toBe(true);
+  });
+
+  it('reports a pressed edge for NumpadEnter as well', () => {
+    const input = createKeyboardInput();
+
+    input.keyDown('NumpadEnter');
+    expect(input.sample().pressed.confirm).toBe(true);
+  });
+
+  it('leaves the jump action unaffected by Enter', () => {
+    const input = createKeyboardInput();
+
+    input.keyDown('Enter');
+    const snapshot = input.sample();
+
+    expect(snapshot.held.jump).toBe(false);
+    expect(snapshot.pressed.jump).toBe(false);
+  });
+});
+
+describe('attachClickConfirm', () => {
+  it('turns a pointerdown into a confirm edge on the next sample', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    const snapshot = input.sample();
+
+    expect(snapshot.pressed.confirm).toBe(true);
+    expect(snapshot.held.confirm).toBe(true);
+  });
+
+  it('releases the confirm action on pointerup', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    input.sample();
+    source.emit('pointerup');
+    const snapshot = input.sample();
+
+    expect(snapshot.held.confirm).toBe(false);
+    expect(snapshot.released.confirm).toBe(true);
+    expect(snapshot.pressed.confirm).toBe(false);
+  });
+
+  it('releases a held click when the element blurs', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    input.sample();
+    source.emit('blur');
+
+    expect(input.sample().held.confirm).toBe(false);
+  });
+
+  it('releases a held click when the pointer is cancelled mid-press', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    input.sample();
+    source.emit('pointercancel');
+
+    expect(input.sample().held.confirm).toBe(false);
+  });
+
+  it('does not swallow the next confirm after a cancelled click', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    // Pointerdown then pointercancel (release lost outside the canvas).
+    source.emit('pointerdown');
+    source.emit('pointercancel');
+    input.sample();
+
+    // The next physical Enter must still register a pressed edge.
+    input.keyDown('Enter');
+    expect(input.sample().pressed.confirm).toBe(true);
+    input.keyUp('Enter');
+  });
+
+  it('grabs pointer capture on pointerdown so a mouse release off-canvas still arrives', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    expect(source.capturedIds()).toHaveLength(1);
+
+    // Capture revoked by the browser: the release must still fire.
+    source.emit('lostpointercapture');
+    expect(input.sample().held.confirm).toBe(false);
+  });
+
+  it('stays clear of every other action', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    const snapshot = input.sample();
+
+    for (const action of [
+      'left',
+      'right',
+      'jump',
+      'restart',
+      'pause',
+    ] satisfies InputAction[]) {
+      expect(snapshot.pressed[action]).toBe(false);
+      expect(snapshot.held[action]).toBe(false);
+    }
+  });
+
+  it('removes all listeners on detach so a later click changes nothing', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    const detach = attachClickConfirm(input, source);
+
+    detach();
+    expect(source.listenerCount('pointerdown')).toBe(0);
+    expect(source.listenerCount('pointerup')).toBe(0);
+    expect(source.listenerCount('blur')).toBe(0);
+
+    source.emit('pointerdown');
+    expect(input.sample().held.confirm).toBe(false);
   });
 });

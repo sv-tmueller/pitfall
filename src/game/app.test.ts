@@ -213,6 +213,42 @@ describe('app shell', () => {
     expect(adapter.stepped[0]!.pressed.jump).toBe(false);
   });
 
+  it('starts the game when Enter confirms the title selection (AC-1)', () => {
+    const { app, input, adapter } = makeApp();
+    input.keyDown('Enter');
+    app.step(DT);
+    input.keyUp('Enter');
+
+    expect(app.screen).toBe('playing');
+    expect(adapter.created).toHaveLength(1);
+  });
+
+  it('does not leak the confirm keypress into the first gameplay step (AC-1)', () => {
+    const { app, input, adapter } = makeApp();
+    input.keyDown('Enter');
+    app.step(DT);
+    input.keyUp('Enter');
+    app.step(DT);
+
+    expect(adapter.stepped).toHaveLength(1);
+    expect(adapter.stepped[0]!.pressed.confirm).toBe(false);
+    expect(adapter.stepped[0]!.pressed.jump).toBe(false);
+  });
+
+  it('selects how-to-play with Enter without starting the game (AC-1)', () => {
+    const { app, input, adapter } = makeApp();
+    input.keyDown('ArrowRight');
+    app.step(DT);
+    input.keyUp('ArrowRight');
+    input.keyDown('Enter');
+    app.step(DT);
+    input.keyUp('Enter');
+
+    expect(app.screen).toBe('title');
+    expect(app.title.showInstructions).toBe(true);
+    expect(adapter.created).toHaveLength(0);
+  });
+
   it('offers continue and resumes at the saved position (AC-4)', () => {
     const storage = prepopulatedStorage(1);
     const { app, input, adapter } = makeApp({ storage });
@@ -364,11 +400,26 @@ describe('app shell', () => {
     expect(adapter.created).toHaveLength(2);
   });
 
+  it('replays from the end screen on an Enter confirm (AC-2)', () => {
+    const { app, input, adapter } = makeApp();
+    startPlaying(app, input);
+    adapter.callbacks?.onSequenceComplete?.();
+    app.step(DT);
+    expect(app.screen).toBe('end');
+
+    input.keyDown('Enter');
+    app.step(DT);
+    input.keyUp('Enter');
+    expect(app.screen).toBe('playing');
+    expect(adapter.created).toHaveLength(2);
+  });
+
   it('renders the title model with the title sprite (AC-1)', () => {
     const { app, ctx } = makeApp();
     app.render(0);
     expect(ctx.calls.some((c) => c.method === 'drawImage')).toBe(true);
     expect(textOf(ctx)).toContain('START');
+    expect(textOf(ctx)).toContain('PRESS SPACE OR ENTER - OR CLICK');
   });
 
   it('renders the end model with the summed death count (AC-2)', () => {

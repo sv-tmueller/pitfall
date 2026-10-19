@@ -12,7 +12,7 @@ function snap(
   pressed: Partial<Record<string, boolean>> = {},
   held: Partial<Record<string, boolean>> = {},
 ): InputSnapshot {
-  const empty = { left: false, right: false, jump: false, restart: false, pause: false };
+  const empty = { left: false, right: false, jump: false, restart: false, pause: false, confirm: false };
   return {
     held: { ...empty, ...held },
     pressed: { ...empty, ...pressed },
@@ -86,13 +86,22 @@ describe('title screen', () => {
     const s = createTitleState();
     expect(s.hasProgress).toBe(false);
     expect(titleOptionCount(s)).toBe(2);
-    expect(textsOf(buildTitleModel(s))).toEqual(['START', 'HOW TO PLAY']);
+    expect(textsOf(buildTitleModel(s))).toEqual([
+      'PRESS SPACE OR ENTER - OR CLICK',
+      'START',
+      'HOW TO PLAY',
+    ]);
   });
 
   it('offers continue, new game and how to play with saved progress', () => {
     const s = createTitleState({ hasProgress: true });
     expect(titleOptionCount(s)).toBe(3);
-    expect(textsOf(buildTitleModel(s))).toEqual(['CONTINUE', 'NEW GAME', 'HOW TO PLAY']);
+    expect(textsOf(buildTitleModel(s))).toEqual([
+      'PRESS SPACE OR ENTER - OR CLICK',
+      'CONTINUE',
+      'NEW GAME',
+      'HOW TO PLAY',
+    ]);
   });
 
   it('selects continue on option 0 with progress and jump', () => {
@@ -128,5 +137,60 @@ describe('title screen', () => {
     expect(s.showInstructions).toBe(true);
     s = stepTitle(s, snap({ right: true }), DT);
     expect(s.showInstructions).toBe(false);
+  });
+
+  it('builds the model with the confirm hint while the flash is on', () => {
+    const model = buildTitleModel(createTitleState());
+
+    expect(textsOf(model)).toContain('PRESS SPACE OR ENTER - OR CLICK');
+  });
+
+  it('blinks the confirm hint off for the second half of the cycle', () => {
+    let s = createTitleState();
+    for (let i = 0; i < 30; i++) s = stepTitle(s, snap(), DT);
+
+    expect(textsOf(buildTitleModel(s))).not.toContain('PRESS SPACE OR ENTER - OR CLICK');
+  });
+
+  it('renders the control list and the goal while how-to-play is highlighted', () => {
+    let s = createTitleState();
+    s = stepTitle(s, snap({ right: true }), DT);
+    const texts = textsOf(buildTitleModel(s));
+
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        'MOVE: ARROWS OR A/D',
+        'JUMP: SPACE OR UP',
+        'PAUSE: P OR ESC',
+        'RESTART: R',
+        'REACH THE EXIT IN EVERY LEVEL',
+      ]),
+    );
+  });
+
+  it('renders no instructional text while how-to-play is not highlighted', () => {
+    const texts = textsOf(buildTitleModel(createTitleState()));
+
+    expect(texts).not.toContain('MOVE: ARROWS OR A/D');
+    expect(texts).not.toContain('REACH THE EXIT IN EVERY LEVEL');
+  });
+
+  it('getTitleTransition returns start on option 0 + confirm', () => {
+    const s = createTitleState();
+
+    expect(getTitleTransition(s, snap({ confirm: true }))).toBe('start');
+  });
+
+  it('getTitleTransition returns how-to-play on option 1 + confirm', () => {
+    let s = createTitleState();
+    s = stepTitle(s, snap({ right: true }), DT);
+
+    expect(getTitleTransition(s, snap({ confirm: true }))).toBe('how-to-play');
+  });
+
+  it('getTitleTransition returns continue on option 0 with progress and confirm', () => {
+    const s = createTitleState({ hasProgress: true });
+
+    expect(getTitleTransition(s, snap({ confirm: true }))).toBe('continue');
   });
 });
