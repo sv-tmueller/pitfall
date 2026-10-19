@@ -187,6 +187,12 @@ function collectActiveSolids(state: SceneState, dt: number): SolidRect[] {
       y: solid.y + solid.velocityY * dt,
       width: solid.width,
       height: solid.height,
+      // The published position is the start-of-step top; the advance above is
+      // the end-of-step top. Handing both to the solver lets its landing guard
+      // test against where the top began, which is what catches a body a
+      // rising platform would otherwise route past (issue #168). Trap-owned
+      // solids pushed above stay static this step and omit startY.
+      startY: solid.y,
     });
   }
   return solids;
@@ -229,6 +235,14 @@ function carryRiders(
  * this step (position differs from the pre-stepTraps snapshot), or overlapping
  * any solid flagged lethal. Stationary non-lethal solids merely block, which
  * the collide solve already enforced.
+ *
+ * The moved-kill arm is trap-solids-only BY DESIGN. `before` is the trap-owned
+ * snapshot taken just before stepTraps advances them, so a mechanic-published
+ * solid never has a prior entry and can never trip this arm; mechanic solids
+ * kill exclusively through the lethal flag. Extending the moved arm to
+ * mechanics would mean snapshotting published solids across the buffer-clearing
+ * stepMechanics cycle for a case no shipped level exercises, which batch #164
+ * explicitly rejected. Left as-is and pinned by the issue #168 regressions.
  */
 function isCrushed(
   body: Body,
