@@ -206,3 +206,45 @@ describe('bfsReachable (direct unit)', () => {
     expect(bfsReachable(level)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// sweepEdge: one-way came-from-above semantics (issue #175)
+//
+// The engine's resolveY blocks a falling body on a OneWay tile only when the
+// body's bottom edge began at or above the tile's top face this step; a body
+// rising through or drifting past a one-way passes. These direct pins hold
+// the sweep to the same rule: descending through a shelf is rejected,
+// ascending through it and landing on top of it are certified.
+// ---------------------------------------------------------------------------
+
+describe('sweepEdge one-way semantics (issue #175)', () => {
+  // A one-way shelf spans cols 1-4 at row 2 (top face y = 32); open sky
+  // above (rows 0-1) and the row-3 standing row on the row-4 floor.
+  const oneWayShelf = gridFrom([
+    '00000000',
+    '00000000',
+    '02222000',
+    '00000000',
+    '11111111',
+  ]);
+
+  it('descending through a one-way shelf is rejected (came from above)', () => {
+    // (2,0) -> (2,3): the body starts above the shelf and the arc/free-fall
+    // descends through row 2, where the engine strands it on the shelf.
+    expect(sweepEdge(oneWayShelf, 2, 0, 2, 3, 260)).toBe(false);
+  });
+
+  it('ascending through a one-way shelf still certifies (pass from below)', () => {
+    // (2,3) -> (2,0): the identical geometry flown upward. The body
+    // originates below the shelf top, so the engine lets it pass; the sweep
+    // must not over-block the ascent.
+    expect(sweepEdge(oneWayShelf, 2, 3, 2, 0, 260)).toBe(true);
+  });
+
+  it('landing on top of a one-way shelf certifies (destination standability unchanged)', () => {
+    // (2,0) -> (2,1): the body descends and comes to rest on the shelf's top
+    // face (destination row 1, support at row 2). The landing sample sits
+    // above the support tile, so the descending predicate does not fire.
+    expect(sweepEdge(oneWayShelf, 2, 0, 2, 1, 260)).toBe(true);
+  });
+});
