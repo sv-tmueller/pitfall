@@ -3,6 +3,7 @@ import atlasManifest from '../../assets/atlas.json';
 import { loadAtlas, type BitmapLike } from './atlas-loader';
 import {
   buildDynamicSolidRects,
+  buildEffectsLayer,
   buildEntitySprites,
   buildHudLayer,
   buildRenderModel,
@@ -17,6 +18,7 @@ import type { Vec2 } from '../engine/physics';
 import type { TilePosition } from '../levels/types';
 import type { HazardRect } from '../engine/levelAdapter';
 import type { DynamicSolid } from '../traps/types';
+import type { Particle } from '../effects/particles';
 
 const MANIFEST = atlasManifest as unknown as AtlasManifest;
 const BITMAP: BitmapLike = { width: 128, height: 40 };
@@ -352,6 +354,7 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
 
     expect(model.layers).toHaveLength(5);
@@ -374,6 +377,7 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
     expect(model.clear).toBe('void');
   });
@@ -388,6 +392,7 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
     expect(model.layers[0]!.sprites.length).toBeGreaterThan(0);
   });
@@ -407,11 +412,12 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
     expect(model.layers[2]!.sprites).toHaveLength(1);
   });
 
-  it('effects layer is always empty for now', () => {
+  it('effects layer is empty without particles', () => {
     const world = makeWorld(['1'], { exit: { col: 100, row: 100 } });
     const model = buildRenderModel(
       world,
@@ -421,9 +427,42 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
+    expect(model.layers[3]!.kind).toBe('effects');
     expect(model.layers[3]!.sprites).toHaveLength(0);
     expect(model.layers[3]!.rects).toHaveLength(0);
+  });
+
+  it('effects layer renders one fill-rect per particle', () => {
+    const world = makeWorld(['0'], { exit: { col: 100, row: 100 } });
+    const particles: Particle[] = [
+      { x: 10.4, y: 20.6, vx: 0, vy: 0, life: 10, maxLife: 20, color: 'lethal', size: 2 },
+      { x: 30, y: 40, vx: 0, vy: 0, life: 5, maxLife: 20, color: 'edge', size: 1 },
+    ];
+    const model = buildRenderModel(
+      world,
+      { x: 0, y: 0 },
+      [],
+      [],
+      0,
+      ATLAS,
+      0,
+      particles,
+    );
+    const fx = model.layers[3]!;
+    expect(fx.kind).toBe('effects');
+    expect(fx.rects).toHaveLength(2);
+    expect(fx.rects[0]).toEqual({ x: 10, y: 21, w: 2, h: 2, color: 'lethal' });
+    expect(fx.rects[1]).toEqual({ x: 30, y: 40, w: 1, h: 1, color: 'edge' });
+  });
+
+  it('buildEffectsLayer rounds fractional particle positions', () => {
+    const layer = buildEffectsLayer([
+      { x: 1.49, y: 2.5, vx: 0, vy: 0, life: 1, maxLife: 1, color: 'bone', size: 1 },
+    ]);
+    expect(layer.rects[0]!.x).toBe(1);
+    expect(layer.rects[0]!.y).toBe(3);
   });
 
   it('routes dynamic solid rects to the dynamics layer, above tiles', () => {
@@ -439,7 +478,7 @@ describe('buildRenderModel', () => {
       lethal: false,
     };
     const world = makeWorld(['00', '00'], { dynamicSolids: [ds] });
-    const model = buildRenderModel(world, { x: 0, y: 0 }, [], [], 0, ATLAS, 0);
+    const model = buildRenderModel(world, { x: 0, y: 0 }, [], [], 0, ATLAS, 0, []);
     expect(model.layers[0]!.rects).toHaveLength(0);
     expect(model.layers[1]!.kind).toBe('dynamics');
     expect(model.layers[1]!.rects).toHaveLength(1);
@@ -465,6 +504,7 @@ describe('buildRenderModel', () => {
       0.5,
       ATLAS,
       0,
+      [],
     );
     const sprite = model.layers[2]!.sprites[0];
     expect(sprite).toBeDefined();
@@ -482,6 +522,7 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
     expect(model.layers).toHaveLength(5);
     expect(model.layers[4]!.kind).toBe('hud');
@@ -499,6 +540,7 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       44,
+      [],
     );
     expect(model.layers[4]!.texts[0]!.text).toBe('Level 45');
   });
@@ -513,6 +555,7 @@ describe('buildRenderModel', () => {
       0,
       ATLAS,
       0,
+      [],
     );
     expect(model.layers[4]!.texts[0]!.color).toBe('bone');
   });

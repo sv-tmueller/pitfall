@@ -19,7 +19,7 @@ import {
   type TitleState,
 } from '../screens/title';
 import { buildEndModel, createEndState, getEndTransition, stepEnd, type EndState } from '../screens/end';
-import { createGame, renderGame, stepGame, type GameState } from './integration';
+import { createGame, renderGame, stepGame, type GameOptions, type GameState } from './integration';
 import type { SceneCallbacks } from './scene';
 import type { LevelSource } from './sequence';
 import {
@@ -47,7 +47,7 @@ export type AppScreen = 'boot-error' | 'title' | 'playing' | 'end';
  */
 export interface GameAdapter {
   create(
-    opts: { readonly sources: readonly LevelSource[]; readonly atlas: LoadedAtlas },
+    opts: GameOptions,
     input: KeyboardInput,
     callbacks?: SceneCallbacks,
   ): GameState;
@@ -94,6 +94,11 @@ export interface AppOptions {
   readonly storage: SaveStorage;
   readonly blit: BlitContext;
   readonly ticker: Ticker;
+  /**
+   * Effects intensity forwarded to the game (1 = full, 0 = reduced-motion).
+   * From getEffectsIntensity(src/accessibility) in main.ts.
+   */
+  readonly effectsIntensity?: number | undefined;
   readonly adapter?: GameAdapter;
   readonly onScreenChange?: (screen: AppScreen) => void;
   /** Presentation hook: called after each render so the host can blit. */
@@ -252,7 +257,11 @@ export function createApp(options: AppOptions): App {
       }
       const resumeSources = sources.slice(offset);
       shellInput = createShellInput(input);
-      game = adapter.create({ sources: resumeSources, atlas }, shellInput, {
+      game = adapter.create({
+        sources: resumeSources,
+        atlas,
+        effectsIntensity: options.effectsIntensity,
+      }, shellInput, {
         onLevelComplete: (relativeIndex) => handleLevelComplete(relativeIndex),
         onSequenceComplete: () => handleSequenceComplete(),
       });

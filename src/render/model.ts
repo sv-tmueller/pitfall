@@ -11,6 +11,7 @@ import type { TilePosition } from '../levels/types';
 import type { HazardRect } from '../engine/levelAdapter';
 import type { DynamicSolid } from '../traps/types';
 import type { Vec2 } from '../engine/physics';
+import type { Particle } from '../effects/particles';
 
 const TILE_SIZE = 16;
 
@@ -314,10 +315,26 @@ export function buildHudLayer(levelIndex: number): DrawText[] {
 }
 
 /**
+ * Effects layer: particle fill-rects, one square per living particle.
+ * Rounded to whole pixels so the batcher never samples fractionally.
+ */
+export function buildEffectsLayer(particles: readonly Particle[]): RenderLayer {
+  const rects: FillRect[] = particles.map((p) => ({
+    x: snap(p.x),
+    y: snap(p.y),
+    w: p.size,
+    h: p.size,
+    color: p.color,
+  }));
+  return { kind: 'effects', sprites: [], rects, texts: [] };
+}
+
+/**
  * Composes the full render model: clear=void, layers=[world, dynamics,
  * entities, effects, hud] in FIXED order. Dynamics sit above tiles so
  * moving solids are never painted underneath them, and below entities so
- * the player stays visible while riding a platform.
+ * the player stays visible while riding a platform. Particles populate
+ * the effects layer above the entities.
  */
 export function buildRenderModel(
   world: RenderWorld,
@@ -327,6 +344,7 @@ export function buildRenderModel(
   alpha: number,
   atlas: LoadedAtlas,
   levelIndex: number,
+  particles: readonly Particle[],
 ): RenderModel {
   const worldLayer = buildTileLayer(world, camera);
   const dynamicRects = buildDynamicSolidRects(world, camera);
@@ -345,7 +363,7 @@ export function buildRenderModel(
       { kind: 'world', sprites: worldLayer.sprites, rects: worldLayer.rects, texts: [] },
       { kind: 'dynamics', sprites: [], rects: dynamicRects, texts: [] },
       { kind: 'entities', sprites: entitySprites, rects: [], texts: [] },
-      { kind: 'effects', sprites: [], rects: [], texts: [] },
+      buildEffectsLayer(particles),
       { kind: 'hud', sprites: [], rects: [], texts: hudTexts },
     ],
   };

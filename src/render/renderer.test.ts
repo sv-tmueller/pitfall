@@ -69,6 +69,8 @@ describe('renderFrame', () => {
       entities: [],
       prevEntities: [],
       levelIndex: 0,
+      particles: [],
+      shakeOffset: { x: 0, y: 0 },
     };
 
     renderFrame(ctx, rc, 0);
@@ -91,6 +93,8 @@ describe('renderFrame', () => {
       entities: [],
       prevEntities: [],
       levelIndex: 0,
+      particles: [],
+      shakeOffset: { x: 0, y: 0 },
     };
 
     renderFrame(ctx, rc, 0);
@@ -122,6 +126,8 @@ describe('renderFrame', () => {
       entities: [currEnt],
       prevEntities: [prevEnt],
       levelIndex: 0,
+      particles: [],
+      shakeOffset: { x: 0, y: 0 },
     };
 
     renderFrame(ctx, rc, 0.5);
@@ -164,6 +170,8 @@ describe('renderFrame', () => {
       entities,
       prevEntities,
       levelIndex: 0,
+      particles: [],
+      shakeOffset: { x: 0, y: 0 },
     };
 
     // Deep freeze-ish: record originals.

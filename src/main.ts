@@ -6,6 +6,7 @@ import { BASE_HEIGHT, BASE_WIDTH, computeCanvasLayout } from './scale';
 import { attachKeyboardInput, createKeyboardInput } from './engine/input';
 import { createRafTicker } from './engine/loop';
 import { createApp, formatBootError } from './game/app';
+import { createAccessibilitySettings, getEffectsIntensity } from './accessibility/accessibility';
 import { createLocalStorage } from './save/storage';
 import { MVP_LEVELS, MVP_SEQUENCE } from './levels/mvp';
 import { WORLD2_LEVELS, WORLD2_SEQUENCE } from './levels/world2';
@@ -72,6 +73,14 @@ function bootstrap(
   const input = createKeyboardInput();
   attachKeyboardInput(input, window);
 
+  // Reduced motion: honor the OS/browser preference. Under reduced motion
+  // the effects intensity is 0 (no shake, no particles, no hit-stop).
+  const prefersReducedMotion =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const accessibility = createAccessibilitySettings(prefersReducedMotion);
+  const effectsIntensity = getEffectsIntensity(accessibility);
+
   const app = createApp({
     sources: SOURCES,
     atlas,
@@ -79,6 +88,7 @@ function bootstrap(
     storage: createLocalStorage(),
     blit: backCtx,
     ticker: createRafTicker(),
+    effectsIntensity,
     present: () => {
       const layout = computeCanvasLayout({
         width: window.innerWidth,
