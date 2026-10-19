@@ -332,7 +332,6 @@ describe('moveAndCollide - rising-platform tunneling (issue #168)', () => {
 
     expect(result.body.grounded).toBe(false);
     expect(result.body.y).toBeCloseTo(30 + 240 * DT);
-    expect(result.body.y).not.toBe(16);
   });
 
   it('does not eject a body already inside a solid that did not rise this step', () => {

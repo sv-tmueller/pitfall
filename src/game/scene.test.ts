@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { TILE_SIZE } from '../engine/physics';
 import type { Body } from '../engine/physics';
 import type { LevelData, Tile as LvlTile } from '../levels/types';
@@ -600,30 +600,34 @@ describe('scene - mechanics integration', () => {
 // Test-only mechanic: publishes one dynamic solid at a fixed position every
 // step with a configurable lethal flag and velocity. Lets the crush-rule
 // regressions (issue #168) place a MECHANIC solid directly on the player
-// without needing a shipped mechanic that publishes one. Registered at module
-// load; the name is unique so it never collides with the shipped types.
-registerMechanicType('test-solid', (entry) => {
-  const solid: DynamicSolid = {
-    id: entry.id,
-    x: Number(entry.params.x),
-    y: Number(entry.params.y),
-    width: Number(entry.params.width),
-    height: Number(entry.params.height),
-    velocityX: Number(entry.params.velocityX ?? 0),
-    velocityY: Number(entry.params.velocityY ?? 0),
-    solid: true,
-    lethal: entry.params.lethal === true,
-  };
-  return {
-    id: entry.id,
-    type: entry.type,
-    step() {
-      return { dynamicSolids: [solid] };
-    },
-    reset() {
-      // Fixed solid: nothing to restore.
-    },
-  };
+// without needing a shipped mechanic that publishes one. Registered in a
+// beforeAll hook rather than at module load, so importing this file has no
+// registry side effect; the name is unique so it never collides with shipped
+// types.
+beforeAll(() => {
+  registerMechanicType('test-solid', (entry) => {
+    const solid: DynamicSolid = {
+      id: entry.id,
+      x: Number(entry.params.x),
+      y: Number(entry.params.y),
+      width: Number(entry.params.width),
+      height: Number(entry.params.height),
+      velocityX: Number(entry.params.velocityX ?? 0),
+      velocityY: Number(entry.params.velocityY ?? 0),
+      solid: true,
+      lethal: entry.params.lethal === true,
+    };
+    return {
+      id: entry.id,
+      type: entry.type,
+      step() {
+        return { dynamicSolids: [solid] };
+      },
+      reset() {
+        // Fixed solid: nothing to restore.
+      },
+    };
+  });
 });
 
 /**
@@ -766,6 +770,67 @@ describe('scene - dynamic solids (issue #158)', () => {
 
     expect(sawTurnaround).toBe(true);
     expect(s.controller.body.grounded).toBe(true);
+  });
+
+  it('a rider stays grounded down a descending platform (issue #168)', () => {
+    // Vertical ping-pong platform (dy = 1): one pixel down per step for the
+    // first `distance` steps, then back up. The player spawns flush on its top
+    // (bottom edge at y = 32) and falls a few steps to catch it, after which
+    // the ride must never break. This mirrors the reviewer's trace: carryRiders
+    // shifts a grounded rider by the platform's displacement, so the rider ends
+    // carry with originalBottom exactly at the end-of-step top. The landing
+    // guard must read that equality as a landing (Math.max(startY, y)); with
+    // startY alone the rider loses grounding on every descending step and is
+    // dropped, disarming carryRiders for the next step.
+    const source = makeShaftLevel({
+      cols: 12,
+      spawn: { col: 4, row: 1 },
+      exit: { col: 11, row: 1 },
+      mechanics: [
+        {
+          id: 'descend',
+          type: 'moving-platform',
+          params: {
+            startX: 48,
+            startY: 32,
+            width: 32,
+            height: 16,
+            dx: 0,
+            dy: 1,
+            speed: 60,
+            distance: 16,
+          },
+        },
+      ],
+    });
+
+    let s = createScene([source]);
+    let ridden = false;
+    let descendingSteps = 0;
+
+    for (let i = 0; i < 24; i++) {
+      s = stepScene(s, idle(), DT);
+      const platform = s.mechanicsRuntime.publishedSolids[0]!;
+      const body = s.controller.body;
+
+      // Stay on the descending leg; the published velocity is stale for one
+      // step at the turnaround, which is not what this test pins.
+      if (platform.velocityY <= 0) break;
+      descendingSteps++;
+
+      if (ridden) {
+        // Once aboard, grounding must not flicker: a lost step disarms
+        // carryRiders for the next one.
+        expect(body.grounded).toBe(true);
+        // Flush on the end-of-step top the platform lands on.
+        const endTop = platform.y + platform.velocityY * DT;
+        expect(Math.abs(body.y + body.height - endTop)).toBeLessThanOrEqual(1);
+      }
+      if (body.grounded) ridden = true;
+    }
+
+    expect(ridden).toBe(true);
+    expect(descendingSteps).toBeGreaterThan(10);
   });
 
   it('a stationary lethal mechanic solid kills via the lethal arm (issue #168)', () => {

@@ -181,18 +181,28 @@ function resolveY(
         break;
       }
     }
-    // Dynamic solids: land on the top face. The body must have started at or
-    // above where the top BEGAN (startY) rather than where it ended (y): a
-    // rising platform cannot legitimately have passed a body whose bottom was
-    // already at or above its start-of-step top, so this closes the window
-    // where a body ending a step just inside the solid fell through next step.
-    // A body genuinely inside the solid (its bottom began below startY) is
-    // still excluded, preserving the no-pull-out invariant. The body lands on
-    // the end-of-step top, keeping flush-edge alignment for riders.
+    // Dynamic solids: land on the top face. The guard reads the LOWER of the
+    // platform's start-of-step top (startY) and end-of-step top (y), so a body
+    // whose bottom began at or above that face is caught.
+    //   - Rising platform: startY sits below the end top, so the guard tests
+    //     against startY. A riser cannot legitimately have passed a body whose
+    //     bottom already began at or above its start-of-step top, which closes
+    //     the window where a body ending a step just inside the solid fell
+    //     through next step.
+    //   - Descending platform: the end top is the lower face, so the guard
+    //     tests against y. A rider carried flush onto the platform ends the
+    //     step with its bottom exactly at that end-of-step top; treating the
+    //     equality as a landing is what keeps it grounded (and thus carried)
+    //     instead of dropping it for a one-step miss.
+    //   - Static solid (startY absent or equal to y): both readings coincide,
+    //     preserving the original behaviour.
+    // A body genuinely inside the solid (its bottom began below the lower face)
+    // is still excluded, preserving the no-pull-out invariant. The body lands
+    // on the end-of-step top, keeping flush-edge alignment for riders.
     for (const solid of solids) {
       if (!horizontalRangesOverlap(body, solid)) continue;
       const stop = solid.y - body.height;
-      const landTop = solid.startY ?? solid.y;
+      const landTop = Math.max(solid.startY ?? solid.y, solid.y);
       if (originalBottom <= landTop && y + body.height > solid.y && stop < y) {
         y = stop;
         resolvedVy = 0;
