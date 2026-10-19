@@ -344,6 +344,9 @@ describe('moveAndCollide - rising-platform tunneling (issue #168)', () => {
 
     expect(result.body.grounded).toBe(false);
     expect(result.body.y).toBeCloseTo(30 + 240 * DT);
+  });
+});
+
 describe('moveAndCollide - inverted gravity dynamic solids', () => {
   // An empty tile grid so only the dynamic solids can affect the result.
   const emptyGrid = parseGrid(['...', '...', '...', '...', '...', '...']);

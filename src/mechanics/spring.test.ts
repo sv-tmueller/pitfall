@@ -28,6 +28,23 @@ describe('spring', () => {
     expect(launched.velocity.x).toBe(200);
     expect(launched.velocity.y).toBe(-200);
   });
+  it('overwrites vy absolutely, independent of gravity direction (#174)', () => {
+    // Engine fact backing the validator's spring-in-zone exclusion: the
+    // impulse ignores the gravity sign entirely. A spring hit inside an
+    // inverted region still launches toward -y (world-down impulse stays
+    // world-down), which is why the reachability model must not grant
+    // spring launches inside gravity zones.
+    const s = createSpring(100, 100, 0, -400);
+    const body = makeBody(100, 100);
+    const launched = applySpringImpulse(s, body);
+    expect(launched.velocity.y).toBe(-400);
+    // And a downward-impulse spring (hypothetical) would push world-down
+    // even though an inverted player's "up" is +y: the assignment is
+    // absolute, not gravity-relative.
+    const down = createSpring(100, 100, 0, 300);
+    const launchedDown = applySpringImpulse(down, makeBody(100, 100));
+    expect(launchedDown.velocity.y).toBe(300);
+  });
   it('cooldown prevents rapid re-trigger', () => {
     let s = createSpring(100, 100, 0, -400);
     s = triggerSpring(s);

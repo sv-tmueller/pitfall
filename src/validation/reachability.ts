@@ -1104,11 +1104,12 @@ export function bfsReachable(level: LevelData): boolean {
 
     // Choose neighbor set: spring takes precedence if present. Springs inside
     // a gravity zone are exempt: the engine's spring impulse overwrites vy in
-    // absolute terms, independent of the gravity sign (applySpringImpulse),
-    // so the modelled rise, which assumes the launch fights normal gravity,
-    // does not describe flight once the pull is inverted. Falling back to the
-    // zone-mirrored jump envelope under-certifies reach rather than certifying
-    // a launch the engine cannot actually make.
+    // absolute terms, independent of the gravity sign (pinned in
+    // spring.test.ts: applySpringImpulse assigns impulseY directly), so the
+    // modelled rise, which assumes the launch fights normal gravity, does
+    // not describe flight once the pull is inverted. Falling back to the
+    // zone-mirrored jump envelope under-certifies reach rather than
+    // certifying a launch the engine cannot actually make.
     const springAt = inverted ? undefined : springCache.get(posKey);
     if (springAt) {
       neighbors = springAt.neighbors;
