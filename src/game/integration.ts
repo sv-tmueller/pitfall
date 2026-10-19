@@ -5,6 +5,7 @@ import type { LoadedAtlas } from '../render/atlas-loader';
 import type { BlitContext } from '../render/batcher';
 import { computeCamera } from '../render/camera';
 import { renderFrame, type EntitySnapshot, type RenderWorld } from '../render/renderer';
+import { interpolate } from '../render/model';
 import {
   createAnimTrack,
   currentFrame,
@@ -19,10 +20,35 @@ import {
   type SceneState,
 } from './scene';
 import type { LevelSource } from './sequence';
+import { SNAP_DISTANCE } from './constants';
+import {
+  createEffects,
+  isEffectsFrozen,
+  onDeath,
+  onLand,
+  stepEffects,
+  type EffectsManager,
+} from '../effects/index';
+
+/** Fixed PRNG seed for the effects manager: deterministic, no clock/random. */
+const EFFECTS_SEED = 0x5EED;
+
+/** Squared distance between two body origins. */
+function bodyDistSq(a: Body, b: Body): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
 
 export interface GameOptions {
   readonly sources: readonly LevelSource[];
   readonly atlas: LoadedAtlas;
+  /**
+   * Effects intensity (1 = full, 0 = reduced-motion: no shake, no
+   * particles, no hit-stop). Comes from getEffectsIntensity in
+   * src/accessibility.
+   */
+  readonly effectsIntensity?: number | undefined;
 }
 
 export interface GameState {
@@ -31,6 +57,7 @@ export interface GameState {
   readonly atlas: LoadedAtlas;
   readonly animTrack: AnimTrack;
   readonly prevBody: Body;
+  readonly effects: EffectsManager;
   readonly callbacks?: SceneCallbacks;
 }
 
@@ -65,6 +92,7 @@ export function createGame(
     atlas: opts.atlas,
     animTrack: createAnimTrack(),
     prevBody: scene.controller.body,
+    effects: createEffects(EFFECTS_SEED, opts.effectsIntensity ?? 1),
   };
   return callbacks !== undefined ? { ...base, callbacks } : base;
 }
@@ -73,12 +101,34 @@ export function stepGame(state: GameState, dt: number): GameState {
   const snap = state.input.sample();
   const actions = inputSnapshotToSceneActions(snap);
 
+  // Hit-stop freeze: advance the effects only and skip the scene step.
+  // The shell's primed input snapshot for this step is consumed without a
+  // scene step, which is correct for a freeze: nothing accumulates because
+  // prime() replaces pending each step.
+  if (isEffectsFrozen(state.effects)) {
+    const base: Omit<GameState, 'callbacks'> = {
+      ...state,
+      effects: stepEffects(state.effects, dt),
+    };
+    return state.callbacks !== undefined
+      ? { ...base, callbacks: state.callbacks }
+      : base;
+  }
+
   // Capture prevBody BEFORE stepping for interpolation.
   const prevBody = state.scene.controller.body;
+  const prevPhase = state.scene.phase;
 
   const newScene = stepScene(state.scene, actions, dt);
 
   const body = newScene.controller.body;
+
+  // Snap rule: a discontinuous relocation (respawn, level advance,
+  // teleporter) exceeds SNAP_DISTANCE in one step. Overwrite prevBody so
+  // interpolation starts from the new position instead of smearing across
+  // the gap. Legitimate movement is bounded by terminalVel * DT (~6.7 px).
+  const snappedPrev =
+    bodyDistSq(prevBody, body) > SNAP_DISTANCE * SNAP_DISTANCE ? body : prevBody;
   const newTrack = stepAnimation(
     state.animTrack,
     body.grounded,
@@ -87,12 +137,30 @@ export function stepGame(state: GameState, dt: number): GameState {
     dt,
   );
 
+  // Death: any transition into 'dying' (crush, hazard contact, R-restart)
+  // fires the death burst at the NEW body position. Phase-transition
+  // detection rather than a deaths-counter diff so R-restart (which does
+  // not bump deathsTotal) is covered too.
+  let effects = state.effects;
+  if (prevPhase !== 'dying' && newScene.phase === 'dying') {
+    effects = onDeath(effects, body.x, body.y);
+  }
+
+  // Landing: airborne last step, grounded now. Impact velocity is the
+  // PRE-step downward velocity, captured in prevBody.
+  if (!prevBody.grounded && body.grounded) {
+    effects = onLand(effects, body.x, body.y + body.height, prevBody.velocity.y);
+  }
+
+  effects = stepEffects(effects, dt);
+
   const base: Omit<GameState, 'callbacks'> = {
     scene: newScene,
     input: state.input,
     atlas: state.atlas,
     animTrack: newTrack,
-    prevBody,
+    prevBody: snappedPrev,
+    effects,
   };
   return state.callbacks !== undefined
     ? { ...base, callbacks: state.callbacks }
@@ -103,8 +171,11 @@ export function renderGame(state: GameState, ctx: BlitContext, alpha: number): v
   const body = state.scene.controller.body;
   const level = state.scene.level;
 
-  const centerX = body.x + body.width / 2;
-  const centerY = body.y + body.height / 2;
+  // Camera follows the INTERPOLATED body so the camera and the sprite agree
+  // at every alpha; computeCamera rounds to whole pixels.
+  const pos = interpolate(state.prevBody, body, alpha);
+  const centerX = pos.x + body.width / 2;
+  const centerY = pos.y + body.height / 2;
   const camera = computeCamera(centerX, centerY, level.cols * 16, level.rows * 16);
 
   const frame = currentFrame(state.animTrack);
@@ -154,5 +225,7 @@ export function renderGame(state: GameState, ctx: BlitContext, alpha: number): v
     entities: [currEntity],
     prevEntities: [prevEntity],
     levelIndex: state.scene.sequence.index,
+    particles: state.effects.particles.particles,
+    shakeOffset: { x: state.effects.shake.offsetX, y: state.effects.shake.offsetY },
   }, alpha);
 }

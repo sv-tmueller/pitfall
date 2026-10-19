@@ -11,6 +11,14 @@ export const DEATH_FREEZE_STEPS = 10;
 export const EXIT_BEAT_STEPS = 18;
 
 /**
+ * Maximum body displacement per step considered continuous for render
+ * interpolation. Legitimate movement is bounded by terminalVel * DT
+ * (~6.7 px); anything farther (respawn, level advance, teleporter) snaps
+ * prevBody to the new body so interpolation never smears across the jump.
+ */
+export const SNAP_DISTANCE = 16;
+
+/**
  * Bottom-aligns a body onto a spawn tile so the feet rest on the floor below
  * the spawn row. x = col * TILE_SIZE, y = (row + 1) * TILE_SIZE - height.
  */

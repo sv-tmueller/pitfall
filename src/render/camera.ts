@@ -23,8 +23,10 @@ export function computeCamera(
   const maxX = Math.max(0, levelW - BASE_WIDTH);
   const maxY = Math.max(0, levelH - BASE_HEIGHT);
 
+  // Whole-pixel camera: interpolated centers arrive fractional and are
+  // rounded so every downstream screen coord lands on the pixel grid.
   return {
-    x: clamp(targetCenterX - BASE_WIDTH / 2, 0, maxX),
-    y: clamp(targetCenterY - BASE_HEIGHT / 2, 0, maxY),
+    x: Math.round(clamp(targetCenterX - BASE_WIDTH / 2, 0, maxX)),
+    y: Math.round(clamp(targetCenterY - BASE_HEIGHT / 2, 0, maxY)),
   };
 }

@@ -16,6 +16,7 @@ import { BASE_HEIGHT, BASE_WIDTH } from '../scale';
 export interface BlitContext {
   fillStyle: string;
   font: string;
+  imageSmoothingEnabled: boolean;
   fillRect(x: number, y: number, w: number, h: number): void;
   fillText(text: string, x: number, y: number): void;
   drawImage(
@@ -40,6 +41,9 @@ export function flushModel(
   model: RenderModel,
   atlas: LoadedAtlas,
 ): void {
+  // Nearest-neighbor sampling: fractional dest coords must not blur pixels.
+  ctx.imageSmoothingEnabled = false;
+
   // Clear first, filling the entire backbuffer with the clear color.
   ctx.fillStyle = PALETTE[model.clear];
   ctx.fillRect(0, 0, BASE_WIDTH, BASE_HEIGHT);

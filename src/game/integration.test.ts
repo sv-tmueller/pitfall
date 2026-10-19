@@ -105,9 +105,10 @@ function mockBlitContext(): BlitContext & { calls: { method: string; args: unkno
     calls,
     fillStyle: '',
     font: '',
+    imageSmoothingEnabled: true,
+    drawImage: (...args: unknown[]) => calls.push({ method: 'drawImage', args }),
     fillRect: (...args: unknown[]) => calls.push({ method: 'fillRect', args }),
     fillText: (...args: unknown[]) => calls.push({ method: 'fillText', args }),
-    drawImage: (...args: unknown[]) => calls.push({ method: 'drawImage', args }),
     save: () => calls.push({ method: 'save', args: [] }),
     restore: () => calls.push({ method: 'restore', args: [] }),
     translate: (...args: unknown[]) => calls.push({ method: 'translate', args }),
@@ -332,5 +333,370 @@ describe('renderGame', () => {
     expect(state.prevBody).toEqual(bodyBeforeStep);
     // And the current body should have moved.
     expect(state.scene.controller.body).not.toEqual(state.prevBody);
+  });
+});
+
+describe('interpolation snap on discontinuous relocations', () => {
+  it('snaps prevBody on respawn after death', () => {
+    const input = createFakeInput();
+    const game = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    // Walk away from spawn first so the respawn is a real relocation.
+    input.keyDown('ArrowRight');
+    let walked: GameState = game;
+    for (let i = 0; i < 60; i++) {
+      walked = stepGame(walked, DT);
+    }
+    input.keyUp('ArrowRight');
+    expect(walked.scene.controller.body.x).toBeGreaterThan(
+      game.scene.controller.body.x + 32,
+    );
+
+    // Kill via R-restart (drives playing -> dying), then run out the freeze.
+    input.keyDown('KeyR');
+    let state: GameState = stepGame(walked, DT);
+    input.keyUp('KeyR');
+    expect(state.scene.phase).toBe('dying');
+
+    while (state.scene.phase === 'dying') {
+      state = stepGame(state, DT);
+    }
+
+    // Respawn relocated the body back to spawn; prevBody must coincide
+    // with the new body (no stale cross-map interpolation).
+    expect(state.scene.phase).toBe('playing');
+    expect(state.prevBody.x).toBe(state.scene.controller.body.x);
+    expect(state.prevBody.y).toBe(state.scene.controller.body.y);
+  });
+
+  it('snaps prevBody on level advance', () => {
+    const input = createFakeInput();
+
+    // Second level spawns the player elsewhere so the advance is a jump.
+    const levelB: Record<string, unknown> = JSON.parse(
+      JSON.stringify(FIXTURE_SOURCES['corridor']),
+    ) as Record<string, unknown>;
+    (levelB as { spawn: { col: number; row: number } }).spawn = {
+      col: 10,
+      row: 3,
+    };
+
+    const game = createGame(
+      { sources: [FIXTURE_SOURCES['corridor'], levelB], atlas: ATLAS },
+      input,
+    );
+
+    // Walk to the exit at col 17 and run out the enter beat.
+    input.keyDown('ArrowRight');
+    let state: GameState = game;
+    for (let i = 0; i < 600 && state.scene.phase === 'playing'; i++) {
+      state = stepGame(state, DT);
+    }
+    input.keyUp('ArrowRight');
+    expect(state.scene.phase).toBe('entering');
+
+    while (state.scene.phase === 'entering') {
+      state = stepGame(state, DT);
+    }
+
+    // Advance relocated the body to level B's spawn; prevBody snapped.
+    expect(state.scene.sequence.index).toBe(1);
+    expect(state.prevBody.x).toBe(state.scene.controller.body.x);
+    expect(state.prevBody.y).toBe(state.scene.controller.body.y);
+  });
+
+  it('snaps prevBody on teleporter relocation', () => {
+    const input = createFakeInput();
+
+    // Tiny level with a teleporter pair: pad at (80,144) warps to (240,80).
+    const teleLevel = {
+      name: 'tele-snap',
+      cols: 20,
+      rows: 12,
+      spawn: { col: 2, row: 9 },
+      exit: { col: 18, row: 9 },
+      tiles: [
+        '11111111111111111111',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '10000000000000000001',
+        '11111111111111111111',
+        '11111111111111111111',
+      ],
+      traps: [],
+      mechanics: [
+        {
+          id: 'tp-a',
+          type: 'teleporter',
+          params: {
+            x: 80,
+            y: 144,
+            destX: 240,
+            destY: 80,
+            oneWay: false,
+            preserveMomentum: false,
+          },
+        },
+        {
+          id: 'tp-b',
+          type: 'teleporter',
+          params: {
+            x: 240,
+            y: 80,
+            destX: 80,
+            destY: 144,
+            oneWay: false,
+            preserveMomentum: false,
+          },
+        },
+      ],
+    };
+
+    const game = createGame({ sources: [teleLevel], atlas: ATLAS }, input);
+
+    // Walk right until the body jumps to the destination column.
+    input.keyDown('ArrowRight');
+    let state: GameState = game;
+    let warped = false;
+    for (let i = 0; i < 600 && !warped; i++) {
+      state = stepGame(state, DT);
+      warped = state.scene.controller.body.x >= 240;
+    }
+    input.keyUp('ArrowRight');
+
+    expect(warped).toBe(true);
+    // The warp exceeded SNAP_DISTANCE in one step; prevBody must equal the
+    // post-teleport body, not the pre-teleport position.
+    expect(state.prevBody.x).toBe(state.scene.controller.body.x);
+    expect(state.prevBody.y).toBe(state.scene.controller.body.y);
+  });
+
+  it('keeps prevBody for ordinary sub-SNAP_DISTANCE movement', () => {
+    const input = createFakeInput();
+    const game = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    const bodyBefore = game.scene.controller.body;
+    input.keyDown('ArrowRight');
+    const state = stepGame(game, DT);
+    input.keyUp('ArrowRight');
+
+    // Continuous movement: prevBody preserved (equals the pre-step body).
+    expect(state.prevBody.x).toBe(bodyBefore.x);
+    expect(state.prevBody.y).toBe(bodyBefore.y);
+    expect(state.scene.controller.body.x).toBeGreaterThan(bodyBefore.x);
+  });
+});
+
+describe('renderGame camera from interpolated body', () => {
+  it('feeds the interpolated center to the camera (sprite and camera agree)', () => {
+    const input = createFakeInput();
+
+    // Wide level (40 cols) so the camera pans and rounding is observable.
+    const wideRows = Array.from({ length: 12 }, (_, r) =>
+      r === 0 || r >= 10 ? '1'.repeat(40) : `1${'0'.repeat(38)}1`,
+    );
+    const wideLevel = {
+      name: 'wide-cam',
+      cols: 40,
+      rows: 12,
+      spawn: { col: 2, row: 9 },
+      exit: { col: 38, row: 9 },
+      tiles: wideRows,
+      traps: [],
+    };
+
+    const game = createGame({ sources: [wideLevel], atlas: ATLAS }, input);
+
+    // Walk right for a stretch so the camera is off the clamp and prev !=
+    // curr on the final step.
+    input.keyDown('ArrowRight');
+    let state: GameState = game;
+    for (let i = 0; i < 120; i++) {
+      state = stepGame(state, DT);
+    }
+    input.keyUp('ArrowRight');
+
+    const body = state.scene.controller.body;
+    const prev = state.prevBody;
+    expect(prev.x).toBeLessThan(body.x);
+
+    const ctx = mockBlitContext();
+    renderGame(state, ctx, 0.5);
+
+    // Expected camera x from the INTERPOLATED center (alpha = 0.5),
+    // rounded. Width 16 -> center = pos.x + 8.
+    const interpX = prev.x + (body.x - prev.x) * 0.5;
+    const expectedCamX = Math.round(Math.max(0, interpX + 8 - 160));
+
+    // Leftmost visible tile sprite: startCol = floor(camX / 16), so its
+    // screen x is startCol * 16 - camX.
+    const draws = ctx.calls.filter((c) => c.method === 'drawImage');
+    expect(draws.length).toBeGreaterThan(0);
+    const minX = Math.min(...draws.map((d) => d.args[5] as number));
+    const startCol = Math.floor(expectedCamX / 16);
+    expect(minX).toBe(startCol * 16 - expectedCamX);
+  });
+});
+
+describe('effects wiring', () => {
+  it('fires death effects on any transition into dying (R-restart included)', () => {
+    const input = createFakeInput();
+    const game = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    const state = stepGame(game, DT);
+    input.keyUp('KeyR');
+
+    expect(state.scene.phase).toBe('dying');
+    expect(state.effects.particles.particles.length).toBeGreaterThan(0);
+    expect(state.effects.shake.magnitude).toBeGreaterThan(0);
+    expect(state.effects.hitStop.active).toBe(true);
+  });
+
+  it('freezes the sim during hit-stop and unfreezes after it expires', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+    expect(state.effects.hitStop.active).toBe(true);
+
+    // Frozen steps: the scene must not advance (timer, phase, body frozen).
+    const frozenScene = state.scene;
+    let frozenSteps = 0;
+    while (state.effects.hitStop.active) {
+      state = stepGame(state, DT);
+      frozenSteps++;
+      expect(state.scene.timer).toBe(frozenScene.timer);
+      expect(state.scene.step).toBe(frozenScene.step);
+      expect(state.scene.controller.body.x).toBe(frozenScene.controller.body.x);
+    }
+    // triggerHitStop(3) at intensity 1, but the arming death step already
+    // ran stepEffects (3 -> 2), so exactly 2 fully-frozen steps remain.
+    expect(frozenSteps).toBe(2);
+
+    // Freeze expired: the next step advances the scene normally. The body
+    // is mid-death-freeze, so the observable advance is the dying-phase
+    // timer ticking down again.
+    state = stepGame(state, DT);
+    expect(state.scene.timer).toBe(frozenScene.timer - 1);
+  });
+
+  it('consumes the primed input snapshot during a hit-stop freeze', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    // Die once to arm the freeze.
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+    expect(state.effects.hitStop.active).toBe(true);
+
+    // A jump pressed during the freeze is sampled (and thereby drained) by
+    // the frozen step even though no scene step runs: dropping the primed
+    // snapshot for that step is correct for a freeze.
+    input.keyDown('Space');
+    state = stepGame(state, DT);
+    expect(state.effects.hitStop.active).toBe(true);
+    expect(input.sample().pressed.jump).toBe(false);
+    input.keyUp('Space');
+  });
+
+  it('fires landing effects when the body transitions airborne to grounded', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    // Settle on the ground and let the initial spawn-drop dust die out.
+    // (The spawn fall is itself an airborne -> grounded transition and
+    // legitimately fires one landing burst.)
+    for (let i = 0; i < 60; i++) state = stepGame(state, DT);
+    expect(state.scene.controller.body.grounded).toBe(true);
+    expect(state.effects.particles.particles).toHaveLength(0);
+
+    // Jump, then fall back to the ground.
+    input.keyDown('Space');
+    state = stepGame(state, DT);
+    input.keyUp('Space');
+    expect(state.scene.controller.body.grounded).toBe(false);
+
+    let landed = false;
+    for (let i = 0; i < 60 && !landed; i++) {
+      state = stepGame(state, DT);
+      landed = state.scene.controller.body.grounded;
+    }
+    expect(landed).toBe(true);
+    // onLand spawned dust particles at the feet.
+    expect(state.effects.particles.particles.length).toBeGreaterThan(0);
+  });
+
+  it('reduced-motion intensity (0) produces zero-length effects everywhere', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS, effectsIntensity: 0 },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+
+    expect(state.scene.phase).toBe('dying');
+    expect(state.effects.particles.particles).toHaveLength(0);
+    expect(state.effects.shake.magnitude).toBe(0);
+    expect(state.effects.shake.offsetX).toBe(0);
+    expect(state.effects.shake.offsetY).toBe(0);
+    expect(state.effects.hitStop.active).toBe(false);
+
+    // Rendering with zero effects: the effects layer stays empty and the
+    // shake offset leaves the camera untouched.
+    const ctx = mockBlitContext();
+    expect(() => renderGame(state, ctx, 0.5)).not.toThrow();
+    expect(state.effects.particles.particles).toHaveLength(0);
+  });
+
+  it('passes live particles and shake offsets into the render frame', () => {
+    const input = createFakeInput();
+    let state: GameState = createGame(
+      { sources: [FIXTURE_SOURCES['corridor']], atlas: ATLAS },
+      input,
+    );
+
+    input.keyDown('KeyR');
+    state = stepGame(state, DT);
+    input.keyUp('KeyR');
+    expect(state.effects.particles.particles.length).toBeGreaterThan(0);
+
+    const ctx = mockBlitContext();
+    renderGame(state, ctx, 0.5);
+
+    // Particle fill-rects reached the canvas: at least the clear rect plus
+    // the death-burst rects are present.
+    const fills = ctx.calls.filter((c) => c.method === 'fillRect');
+    expect(fills.length).toBeGreaterThan(1);
   });
 });
