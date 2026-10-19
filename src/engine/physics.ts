@@ -239,8 +239,9 @@ function resolveY(
     //     residual overlap (handling that is general depenetration, a
     //     non-goal per batch #164).
     //   - `grounded` is left as the landing loop computed it, so a rider
-    //     pinned between platform and ceiling stays grounded (and carried)
-    //     instead of oscillating in and out of the carry.
+    //     pinned between platform and ceiling stays grounded (the next
+    //     step's carry still sees it while the flush offset stays within
+    //     CARRY_EPSILON) instead of oscillating in and out of the carry.
     //   - A body moving under its own vy >= 0 cannot newly occupy a solid top
     //     row, so for non-carried bodies this only fires for externally
     //     displaced bodies (a teleporter bodyOverride aimed into a ceiling).
@@ -288,7 +289,7 @@ function resolveY(
     // below, the rows whose top faces the foot bumps. The loops above inspect
     // only the TOP row span, so that intrusion used to be accepted verbatim.
     // Re-seat the foot flush above the row it reached. Tiles only, single-row
-    // scope, `grounded` untouched: same rules as the mirror clamp.
+    // scope, `grounded` untouched: same rules as the ceiling clamp above.
     const lowestTop = Math.max(body.y, y);
     const bottomRow = spanEnd(lowestTop, body.height);
     for (let col = minCol; col <= maxCol; col++) {
