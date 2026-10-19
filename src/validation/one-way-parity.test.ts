@@ -645,6 +645,47 @@ describe('one-way parity: drift past lone shelf tile', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Probe 7: overlap descent. The body OPENS with its bottom edge already
+// inside the shelf row (bottom 98 vs the shelf top 96), still descending.
+// The engine's came-from-above conjunct is false on the first transition
+// (originalBottom 98 > tileTop 96), so the OneWay does not block; the
+// predicate's crossing range starts strictly below prevBottom, so it also
+// passes. This is the one pose where the conjunct's FALSE branch governs
+// both sides, pinning the rule the six #179 probes never reach: dropping
+// the conjunct from the engine (OneWay always blocks) arrests the body on
+// step 1 while the predicate still passes. Verified empirically against a
+// mutated engine in a throwaway worktree: the two assertions below are the
+// ones that go red.
+// ---------------------------------------------------------------------------
+const P7_OVERLAP_DESCENT = driveProbe(
+  'overlap-descent',
+  SHELF_ABOVE_RISE,
+  { x: 48, y: 82, vy: TERMINAL_VEL },
+  12,
+);
+
+describe('one-way parity: overlap descent', () => {
+  it('agrees with the engine on every transition', () => {
+    expect(disagreeingSteps(P7_OVERLAP_DESCENT, sweepPredicate)).toEqual([]);
+  });
+
+  it('opens with the bottom edge inside the shelf row, descending', () => {
+    // Bottom starts at 98, two pixels past the shelf top at 96.
+    expect(P7_OVERLAP_DESCENT.steps[0]!.preY + PLAYER_SIZE).toBe(98);
+    expect(P7_OVERLAP_DESCENT.steps[0]!.vy).toBe(TERMINAL_VEL);
+  });
+
+  it('lets the body sink through the overlapped shelf, both sides', () => {
+    // The engine's landing loop skips the OneWay (originalBottom > tileTop),
+    // and the predicate's crossing range holds no tile top below prevBottom.
+    expect(engineBlockedSteps(P7_OVERLAP_DESCENT)).toEqual([]);
+    expect(verdictSteps(P7_OVERLAP_DESCENT, sweepPredicate)).toEqual([]);
+    // The body ends strictly below the shelf row: the pass is not vacuous.
+    expect(lastStep(P7_OVERLAP_DESCENT).integratedY).toBeGreaterThan(112);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Non-vacuity mutants. Each mutant must produce the exact disagreement
 // fingerprint it is built for, and must stay in agreement everywhere else.
 // ---------------------------------------------------------------------------
