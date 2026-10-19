@@ -307,18 +307,19 @@ describe('InputSnapshot immutability', () => {
   });
 });
 
-type ConfirmListener = () => void;
-
 function createStubClickSource(): ConfirmEventSource & {
   emit(type: ConfirmPointerEventType): void;
   listenerCount(type: ConfirmPointerEventType): number;
+  capturedIds(): number[];
 } {
-  const listeners = new Map<ConfirmPointerEventType, Set<ConfirmListener>>([
+  const listeners = new Map<ConfirmPointerEventType, Set<(event: Event) => void>>([
     ['pointerdown', new Set()],
     ['pointerup', new Set()],
     ['pointercancel', new Set()],
     ['blur', new Set()],
+    ['lostpointercapture', new Set()],
   ]);
+  const captured: number[] = [];
 
   return {
     addEventListener(type, listener) {
@@ -329,11 +330,17 @@ function createStubClickSource(): ConfirmEventSource & {
     },
     emit(type) {
       for (const listener of listeners.get(type) ?? []) {
-        listener();
+        listener(new Event(type));
       }
     },
     listenerCount(type) {
       return listeners.get(type)?.size ?? 0;
+    },
+    capturedIds() {
+      return [...captured];
+    },
+    setPointerCapture(pointerId: number) {
+      captured.push(pointerId);
     },
   };
 }
@@ -436,6 +443,19 @@ describe('attachClickConfirm', () => {
     input.keyDown('Enter');
     expect(input.sample().pressed.confirm).toBe(true);
     input.keyUp('Enter');
+  });
+
+  it('grabs pointer capture on pointerdown so a mouse release off-canvas still arrives', () => {
+    const input = createKeyboardInput();
+    const source = createStubClickSource();
+    attachClickConfirm(input, source);
+
+    source.emit('pointerdown');
+    expect(source.capturedIds()).toHaveLength(1);
+
+    // Capture revoked by the browser: the release must still fire.
+    source.emit('lostpointercapture');
+    expect(input.sample().held.confirm).toBe(false);
   });
 
   it('stays clear of every other action', () => {

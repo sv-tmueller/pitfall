@@ -181,11 +181,22 @@ export function attachKeyboardInput(input: KeyboardInput, source: KeyEventSource
 type AssertAssignable<T extends U, U> = T;
 export type WindowIsAKeyEventSource = AssertAssignable<Window & typeof globalThis, KeyEventSource>;
 
-export type ConfirmPointerEventType = 'pointerdown' | 'pointerup' | 'pointercancel' | 'blur';
+export type ConfirmPointerEventType =
+  | 'pointerdown'
+  | 'pointerup'
+  | 'pointercancel'
+  | 'blur'
+  | 'lostpointercapture';
 
 export interface ConfirmEventSource {
-  addEventListener(type: ConfirmPointerEventType, listener: () => void): void;
-  removeEventListener(type: ConfirmPointerEventType, listener: () => void): void;
+  addEventListener(type: ConfirmPointerEventType, listener: (event: Event) => void): void;
+  removeEventListener(type: ConfirmPointerEventType, listener: (event: Event) => void): void;
+  /**
+   * Routes the eventual pointerup to this element even when the pointer
+   * travels off it (mouse released in the letterbox margin, pen lifted
+   * outside the canvas). Absent for the window-level test stub.
+   */
+  setPointerCapture?(pointerId: number): void;
 }
 
 /**
@@ -198,13 +209,18 @@ export interface ConfirmEventSource {
  * once-per-step sample and drained on the transition frame, exactly like a
  * key press. The bridge therefore never calls sample() itself.
  *
- * pointercancel shares the release handler: a press abandoned mid-click
- * (for example a pointerdown on the letterboxed canvas released outside it)
- * must not strand the confirm code held, or the next real confirm is
- * swallowed by the still-asserted key.
+ * Release safety: a press abandoned mid-click must not strand the confirm
+ * code held, or the next real confirm is swallowed by the still-asserted
+ * key. Mouse pointers released outside the canvas deliver NEITHER pointerup
+ * NOR pointercancel (there is no implicit capture for mouse), so pointerdown
+ * grabs pointer capture when available; pointercancel and
+ * lostpointercapture cover touch/pen interruption and browsers revoking the
+ * grab. Together every abandonment path reaches a release.
  */
 export function attachClickConfirm(input: KeyboardInput, element: ConfirmEventSource): () => void {
-  function onPointerDown(): void {
+  function onPointerDown(event: Event): void {
+    const pointerId = (event as PointerEvent).pointerId;
+    element.setPointerCapture?.(pointerId);
     input.keyDown(CONFIRM_POINTER_CODE);
   }
 
@@ -215,12 +231,14 @@ export function attachClickConfirm(input: KeyboardInput, element: ConfirmEventSo
   element.addEventListener('pointerdown', onPointerDown);
   element.addEventListener('pointerup', onPointerUp);
   element.addEventListener('pointercancel', onPointerUp);
+  element.addEventListener('lostpointercapture', onPointerUp);
   element.addEventListener('blur', onPointerUp);
 
   return function detach(): void {
     element.removeEventListener('pointerdown', onPointerDown);
     element.removeEventListener('pointerup', onPointerUp);
     element.removeEventListener('pointercancel', onPointerUp);
+    element.removeEventListener('lostpointercapture', onPointerUp);
     element.removeEventListener('blur', onPointerUp);
   };
 }
