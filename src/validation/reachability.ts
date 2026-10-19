@@ -394,9 +394,11 @@ export function sweepEdge(
     if (disc < 0) continue;
     const tLand = (v0 + Math.sqrt(disc)) / CONTROLLER_GRAVITY;
     const vx = (ex - sx) / tLand;
-    // Physical feasibility: the controller cannot exceed MAX_RUN, so an
-    // arc demanding more horizontal speed than that is unflyable.
-    if (vx > CONTROLLER_MAX_RUN) continue;
+    // Physical feasibility: the controller cannot sustain more than
+    // MAX_RUN of horizontal speed in EITHER direction, and vx is signed
+    // (leftward arcs are negative), so the cap must test the magnitude.
+    // The unsigned comparison let leftward arcs bypass it entirely.
+    if (Math.abs(vx) > CONTROLLER_MAX_RUN) continue;
     const apexY = sy - (v0 * v0) / (2 * CONTROLLER_GRAVITY);
 
     // Bounding box precheck over the full arc.
@@ -448,6 +450,10 @@ export function sweepEdge(
     // Time from the destination altitude to the apex and back down to it.
     const vAtAlt = Math.sqrt(jumpVelAbs * jumpVelAbs - 2 * CONTROLLER_GRAVITY * risePx);
     const tAbove = (2 * vAtAlt) / CONTROLLER_GRAVITY;
+    // Deliberately conservative: accelerating from rest understates a
+    // running jump's reach (the player arrives at this altitude already
+    // carrying horizontal speed). The shortfall only risks false-blocking,
+    // never false-certification, which is the safe direction.
     // Generous horizontal reach while at/above the altitude: accelerate
     // from rest to MAX_RUN for the whole window.
     const tToMax = CONTROLLER_MAX_RUN / CONTROLLER_ACCEL;
@@ -506,6 +512,12 @@ export function sweepEdge(
     const fallCol = dir === 0 ? col : col + dir;
     const fcx = fallCol * TILE_SIZE + HALF_TILE;
 
+    // Local verdict flag, matching the Motions 1-2 style: a failed phase
+    // rejects THIS composite, not the whole edge evaluation. (An early
+    // return here would be accidentally equivalent only because Motion 3
+    // is the last motion tried.)
+    let compositeOk = true;
+
     // Phase 0: footing along the drift row. The fall must land on a
     // surface in the fall column, and the drift to the destination is a
     // walk, so every intervening column needs a floor too. isStandable
@@ -513,34 +525,38 @@ export function sweepEdge(
     // floor anywhere in the span rejects the edge.
     const driftLo = Math.min(fallCol, nc);
     const driftHi = Math.max(fallCol, nc);
-    for (let cc = driftLo; cc <= driftHi; cc++) {
-      if (!isStandable(grid, cc, nr)) return false;
+    for (let cc = driftLo; cc <= driftHi && compositeOk; cc++) {
+      if (!isStandable(grid, cc, nr)) compositeOk = false;
     }
 
     // Phase A: slide one cell at the source height.
-    const slideSamples = 8;
-    for (let i = 0; i <= slideSamples; i++) {
-      const x = sx + (fcx - sx) * (i / slideSamples);
-      if (hits(x, sy)) return false;
+    if (compositeOk) {
+      const slideSamples = 8;
+      for (let i = 0; i <= slideSamples && compositeOk; i++) {
+        const x = sx + (fcx - sx) * (i / slideSamples);
+        if (hits(x, sy)) compositeOk = false;
+      }
     }
 
     // Phase B: free fall down the fall column.
-    const fallSpan = ey - sy;
-    const fallSamples = Math.max(2, Math.ceil(fallSpan / 1.6));
-    for (let i = 0; i <= fallSamples; i++) {
-      const y = sy + fallSpan * (i / fallSamples);
-      if (hits(fcx, y)) return false;
+    if (compositeOk) {
+      const fallSpan = ey - sy;
+      const fallSamples = Math.max(2, Math.ceil(fallSpan / 1.6));
+      for (let i = 0; i <= fallSamples && compositeOk; i++) {
+        const y = sy + fallSpan * (i / fallSamples);
+        if (hits(fcx, y)) compositeOk = false;
+      }
     }
 
     // Phase C: drift at the landing height to the destination column.
-    if (fcx !== ex) {
+    if (compositeOk && fcx !== ex) {
       const driftSamples = Math.abs(nc - fallCol) * 8;
-      for (let i = 0; i <= driftSamples; i++) {
+      for (let i = 0; i <= driftSamples && compositeOk; i++) {
         const x = fcx + (ex - fcx) * (i / driftSamples);
-        if (hits(x, ey)) return false;
+        if (hits(x, ey)) compositeOk = false;
       }
     }
-    return true;
+    if (compositeOk) return true;
   }
 
   return false;
