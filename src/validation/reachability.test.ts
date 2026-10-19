@@ -827,3 +827,87 @@ describe('swept-path obstruction regressions (#161)', () => {
     expect(validateReachability(level)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// One-way semantics aligned with the engine (issue #175)
+//
+// The sweep formerly treated every OneWay tile as never obstructing, so it
+// certified descents through one-way shelves the engine would land on. The
+// engine's resolveY (physics.ts) blocks a falling body on a one-way only when
+// its bottom edge began at or above the tile's top face (came-from-above);
+// rising and lateral motions pass. These regressions pin the aligned
+// behaviour at full-level reachability granularity.
+// ---------------------------------------------------------------------------
+
+describe('reachability one-way semantics (issue #175)', () => {
+  it('sealed-shelf chamber is NOT reachable: a full-width one-way shelf strands the body', () => {
+    // Spawn on the upper ledge; exit on the floor below, behind a full-width
+    // one-way shelf that is the only passable crossing of the mid wall. The
+    // engine lands a descending body on the shelf and has no drop-through
+    // input, so the level is genuinely unsolvable. Pre-fix the sweep treated
+    // the shelf as never obstructing and certified a drop straight through
+    // it; post-fix the came-from-above rule rejects every descent.
+    const sealed = loadLevel({
+      name: 'sealed-shelf',
+      cols: 10, rows: 8,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 1, row: 6 },
+      tiles: [
+        '1111111111',
+        '1000000001',
+        '1122222211',
+        '1000000001',
+        '1000000001',
+        '1000000001',
+        '1000000001',
+        '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(sealed)).toBe(false);
+  });
+
+  it('positive control: jumping UP through a one-way shelf still certifies', () => {
+    // Spawn below the shelf, exit on the span above it. The only route rises
+    // through the one-way, which the engine allows from below; the aligned
+    // sweep must not over-block the ascending pass-through.
+    const ascend = loadLevel({
+      name: 'ascend-through-oneway',
+      cols: 8, rows: 5,
+      spawn: { col: 1, row: 3 },
+      exit: { col: 1, row: 1 },
+      tiles: [
+        '11111111',
+        '10000001',
+        '12222221',
+        '10000001',
+        '11111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(ascend)).toBe(true);
+  });
+
+  it('positive control: landing on top of a one-way platform still certifies', () => {
+    // Spawn on an upper ledge and step off onto a one-way platform below,
+    // where the exit sits. Arriving from above grounds the body on the
+    // one-way (isStandable already accepts one-way floors), so the drop must
+    // stay certified: the descending predicate rejects overlap with the
+    // shelf the body falls THROUGH, not the surface it lands on.
+    const land = loadLevel({
+      name: 'land-on-oneway',
+      cols: 6, rows: 5,
+      spawn: { col: 1, row: 1 },
+      exit: { col: 2, row: 2 },
+      tiles: [
+        '111111',
+        '100001',
+        '110001',
+        '122221',
+        '111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(land)).toBe(true);
+  });
+});

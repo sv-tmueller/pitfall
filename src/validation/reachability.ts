@@ -273,12 +273,14 @@ function springLaunchNeighbors(springRiseTiles: number): Array<{ dc: number; dr:
 //     slide one cell toward the drift direction, free-fall the source
 //     column's neighbor, land, then walk the drift row (footing required
 //     beneath every drifted column). This models stepping off a ledge
-//     without jumping (and falling through one-way platforms, which never
-//     obstruct).
+//     without jumping; a one-way shelf the body descends onto blocks the
+//     fall via the came-from-above rule (see below).
 //   - Walks are swept as a sliding 16x16 box translated one cell.
 //
-// Any sample intersecting a Solid rejects that motion. OneWay and Hazard
-// tiles never obstruct (passable from below/sides; hazards are geometrically
+// Any sample intersecting a Solid rejects that motion. OneWay tiles block a
+// DESCENDING body only when it originated at or above the tile top (the
+// engine's resolveY came-from-above rule, physics.ts); ascending and lateral
+// motions pass through them. Hazard tiles never obstruct (geometrically
 // traversable). Pure arithmetic, fixed steps, no RNG (CLAUDE.md determinism).
 // ---------------------------------------------------------------------------
 
@@ -314,8 +316,69 @@ function sampleHitsSolid(
 }
 
 /**
+ * True if the player-sized box centered at (cx, cy) obstructs a DESCENDING
+ * body that began this step with its bottom edge at `prevBottom` (the
+ * previous sample's bottom edge).
+ *
+ * Mirrors the engine's per-transition one-way rule (physics.ts resolveY):
+ *   - a Solid tile blocks whenever the box overlaps it (the established,
+ *     conservative sampler behaviour);
+ *   - a OneWay tile blocks only when the body's bottom edge crossed the
+ *     tile's top face downward this step (prevBottom <= tileTop < bottom),
+ *     i.e. the body descended onto the shelf from above. A body rising from
+ *     below or drifting laterally never satisfies the crossing, so it passes.
+ *
+ * The crossing test is expressed as a row/column scan rather than a box
+ * overlap so it is robust to the sweep's sample phase: a monotone descent
+ * always has exactly one sample whose bottom edge straddles the tile top,
+ * whereas a box-overlap test can miss the shelf by a sub-tile margin when
+ * the phase lands unfavourably.
+ *
+ * Issue #175: the sweep previously treated every OneWay as never
+ * obstructing, so it certified descents through one-way shelves the engine
+ * would land on. Out-of-bounds areas do not obstruct (edges are
+ * bounds-checked before the sweep runs).
+ */
+function sampleBlocksBody(
+  grid: ValidatorGrid,
+  cx: number,
+  cy: number,
+  prevBottom: number,
+): boolean {
+  // Conservative Solid coverage: identical to sampleHitsSolid, so adding the
+  // one-way rule never weakens solid detection for descending motions.
+  if (sampleHitsSolid(grid, cx, cy)) return true;
+
+  const bottom = cy + PLAYER_HALF_EXTENT;
+  if (prevBottom >= bottom) return false; // not descending: no one-way crossing
+
+  // Rows whose top face the bottom edge crossed downward this step, i.e.
+  // tileTop in [prevBottom, bottom). The strict upper bound excludes the
+  // supporting tile a landing body comes to rest on top of.
+  const rLo = Math.ceil(prevBottom / TILE_SIZE);
+  const rHi = Math.ceil(bottom / TILE_SIZE) - 1;
+  // Body column span, matching the engine's spanStart/spanEnd convention.
+  const cLo = Math.floor((cx - PLAYER_HALF_EXTENT) / TILE_SIZE);
+  const cHi = Math.ceil((cx + PLAYER_HALF_EXTENT) / TILE_SIZE) - 1;
+  for (let r = rLo; r <= rHi; r++) {
+    if (r < 0 || r >= grid.rows) continue;
+    for (let c = cLo; c <= cHi; c++) {
+      if (c < 0 || c >= grid.cols) continue;
+      if (grid.tiles[r * grid.cols + c] === Tile.OneWay) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Cheap bounding-box precheck: if no Solid tile intersects the inflated
  * rectangle covering the whole swept path, the path is trivially clear.
+ *
+ * `includeOneWay` extends the test to OneWay tiles (issue #175): for a
+ * descending motion a one-way shelf inside the region can block the path, so
+ * its mere presence must defeat the shortcut and force the full sampled
+ * sweep. Direction of error stays conservative either way: over-inclusion
+ * only costs sampling, under-inclusion would certify a blocked descent.
  */
 function regionHasSolid(
   grid: ValidatorGrid,
@@ -323,6 +386,7 @@ function regionHasSolid(
   minY: number,
   maxX: number,
   maxY: number,
+  includeOneWay = false,
 ): boolean {
   const c0 = Math.floor(minX / TILE_SIZE);
   const c1 = Math.floor(maxX / TILE_SIZE);
@@ -332,7 +396,9 @@ function regionHasSolid(
     if (r < 0 || r >= grid.rows) continue;
     for (let c = c0; c <= c1; c++) {
       if (c < 0 || c >= grid.cols) continue;
-      if (grid.tiles[r * grid.cols + c] === Tile.Solid) return true;
+      const tile = grid.tiles[r * grid.cols + c];
+      if (tile === Tile.Solid) return true;
+      if (includeOneWay && tile === Tile.OneWay) return true;
     }
   }
   return false;
@@ -401,7 +467,9 @@ export function sweepEdge(
     if (Math.abs(vx) > CONTROLLER_MAX_RUN) continue;
     const apexY = sy - (v0 * v0) / (2 * CONTROLLER_GRAVITY);
 
-    // Bounding box precheck over the full arc.
+    // Bounding box precheck over the full arc. A descending arc can be
+    // stopped by a one-way shelf, so OneWay presence in the region defeats
+    // the shortcut (issue #175); over-inclusion only costs sampling.
     if (
       !regionHasSolid(
         grid,
@@ -409,6 +477,7 @@ export function sweepEdge(
         Math.min(apexY, sy, ey) - PLAYER_HALF_EXTENT,
         Math.max(sx, ex) + PLAYER_HALF_EXTENT,
         Math.max(sy, ey) + PLAYER_HALF_EXTENT,
+        true,
       )
     ) {
       return true;
@@ -419,14 +488,21 @@ export function sweepEdge(
       Math.max(8, Math.ceil(tLand / SWEEP_DT)),
     );
     let arcOk = true;
+    // One-way semantics (issue #175): carry the previous sample's bottom
+    // edge. A sample that overlaps a one-way shelf the body originated above
+    // is rejected, mirroring the engine's resolveY; the ascent half of every
+    // arc carries a prevBottom below the shelf top and passes, matching the
+    // engine's pass-through from below.
+    let prevBottom = sy + PLAYER_HALF_EXTENT;
     for (let i = 0; i <= samples; i++) {
       const t = (tLand * i) / samples;
       const x = sx + vx * t;
       const y = sy - v0 * t + (CONTROLLER_GRAVITY / 2) * t * t;
-      if (hits(x, y)) {
+      if (sampleBlocksBody(grid, x, y, prevBottom)) {
         arcOk = false;
         break;
       }
+      prevBottom = y + PLAYER_HALF_EXTENT;
     }
     if (arcOk) return true;
   }
@@ -439,6 +515,13 @@ export function sweepEdge(
   // Available only when the rise is within the takeoff impulse's apex
   // (v0^2 / 2g); a wall blocks the traverse, a low ceiling blocks the
   // rise, and the plain arc family already covers unobstructed jumps.
+  //
+  // Deliberately NOT extended with the one-way rule (issue #175): this
+  // motion RISES then moves horizontally, and the engine's resolveY one-way
+  // blocking only applies to a falling body (resolveX ignores one-way tiles
+  // entirely). The rise leg comes from below, so a one-way shelf is passed,
+  // and the apex traverse is lateral, so a one-way at the destination
+  // altitude is not a landing. Only descending motions need the rule.
   //
   // The traverse is bounded by the time the jump spends at or above the
   // destination altitude: the interval between crossing that altitude
@@ -495,8 +578,11 @@ export function sweepEdge(
   // ---- Motion 3 (downward edges only): the walk-off composite -------------
   // Slide one cell toward the drift direction, free-fall that column, LAND,
   // then walk the drift row to the destination column. Models stepping off
-  // a ledge without jumping; also the only way to descend through a
-  // one-way platform under a low ceiling.
+  // a ledge without jumping. The free-fall leg carries the came-from-above
+  // one-way rule (issue #175): a shelf the body originated above blocks the
+  // fall, so a chamber sealed by a full-width one-way shelf is no longer
+  // certified. Landing ON TOP of a one-way still certifies (the landing
+  // sample sits above its support tile, so no one-way overlaps it).
   //
   // Soundness (#161 fix round): the post-fall drift is a GROUNDED walk, so
   // every column of the drift row, from the fall column through the
@@ -538,13 +624,19 @@ export function sweepEdge(
       }
     }
 
-    // Phase B: free fall down the fall column.
+    // Phase B: free fall down the fall column. One-way semantics
+    // (issue #175): carry the previous sample's bottom edge so a shelf the
+    // body descended onto from above blocks the fall, matching the engine's
+    // resolveY. The landing sample sits above its support tile, so arriving
+    // on top of a one-way still certifies.
     if (compositeOk) {
       const fallSpan = ey - sy;
       const fallSamples = Math.max(2, Math.ceil(fallSpan / 1.6));
+      let prevBottom = sy + PLAYER_HALF_EXTENT;
       for (let i = 0; i <= fallSamples && compositeOk; i++) {
         const y = sy + fallSpan * (i / fallSamples);
-        if (hits(fcx, y)) compositeOk = false;
+        if (sampleBlocksBody(grid, fcx, y, prevBottom)) compositeOk = false;
+        prevBottom = y + PLAYER_HALF_EXTENT;
       }
     }
 
