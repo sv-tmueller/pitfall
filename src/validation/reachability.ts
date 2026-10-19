@@ -375,8 +375,10 @@ function sampleHitsSolid(
  * obstructing, so it certified descents through one-way shelves the engine
  * would land on. Out-of-bounds areas do not obstruct (edges are
  * bounds-checked before the sweep runs).
+ *
+ * Exported for direct unit testing of the one-way sweep predicate.
  */
-function sampleBlocksBody(
+export function sampleBlocksBody(
   grid: ValidatorGrid,
   cx: number,
   cy: number,
