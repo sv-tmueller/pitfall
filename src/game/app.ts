@@ -26,7 +26,9 @@ import {
   completeLevel,
   getCurrentPosition,
   getDefaultSettings,
+  isLevelCompleted,
   loadSave,
+  recordAttempt,
   recordDeath,
   saveSave,
   setCurrentPosition,
@@ -224,6 +226,12 @@ export function createApp(options: AppOptions): App {
   let offset = clampIndex(getCurrentPosition(save), sources.length);
   let lastDeathsThisLevel = 0;
   let lastAbsIndex = offset;
+  /**
+   * Absolute level index the shell last counted an attempt for. An attempt is
+   * a level entry (campaign start or a level advance), not a respawn, so only
+   * a change of absolute index records. Null until the campaign starts.
+   */
+  let lastAttemptedIndex: number | null = null;
   let bootMessage: string | null = null;
 
   if (sources.length === 0) {
@@ -249,11 +257,22 @@ export function createApp(options: AppOptions): App {
 
   function startCampaign(mode: 'continue' | 'new'): void {
     try {
+      lastAttemptedIndex = null;
       if (mode === 'new') {
         save = clearSave(storage);
         offset = 0;
       } else {
         offset = clampIndex(getCurrentPosition(save), sources.length);
+        // A finished campaign has no level left to play: the last level is
+        // completed, so CONTINUE goes straight to the end screen instead of
+        // recreating the game at the final level. Derived from the existing
+        // completed flags, so no schema change is needed.
+        if (sources.length > 0 && isLevelCompleted(save, levelKey(sources.length - 1))) {
+          endState = createEndState(sumDeaths(save));
+          paused = false;
+          setScreen('end');
+          return;
+        }
       }
       const resumeSources = sources.slice(offset);
       shellInput = createShellInput(input);
@@ -293,6 +312,14 @@ export function createApp(options: AppOptions): App {
     if (game === null) return;
     const scene = game.scene;
     const absoluteIndex = offset + scene.sequence.index;
+
+    // Level-entry attempt: recorded before the death delta so a death on the
+    // entry frame lands on a payload that already has the level keyed.
+    if (absoluteIndex !== lastAttemptedIndex) {
+      lastAttemptedIndex = absoluteIndex;
+      save = recordAttempt(save, levelKey(absoluteIndex));
+      persist();
+    }
 
     if (absoluteIndex !== lastAbsIndex) {
       lastAbsIndex = absoluteIndex;

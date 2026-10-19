@@ -5,7 +5,7 @@ import type { BlitContext } from './render/batcher';
 import { BASE_HEIGHT, BASE_WIDTH, computeCanvasLayout } from './scale';
 import { attachClickConfirm, attachKeyboardInput, createKeyboardInput } from './engine/input';
 import { createRafTicker } from './engine/loop';
-import { createApp, formatBootError } from './game/app';
+import { createApp, formatBootError, type App } from './game/app';
 import { createAccessibilitySettings, getEffectsIntensity } from './accessibility/accessibility';
 import { createLocalStorage } from './save/storage';
 import { MVP_LEVELS, MVP_SEQUENCE } from './levels/mvp';
@@ -36,7 +36,7 @@ async function loadAtlasBitmap(): Promise<ImageBitmap> {
 }
 
 /** Write a readable message into the DOM fallback container. */
-function showBootError(error: unknown): void {
+export function showBootError(error: unknown): void {
   const message = formatBootError(error);
   const container = document.querySelector<HTMLElement>('#boot-error');
   if (container !== null) {
@@ -44,6 +44,19 @@ function showBootError(error: unknown): void {
     container.hidden = false;
   }
   console.error(message, error);
+}
+
+/**
+ * Focus policy: losing the window or hiding the tab pauses play so the player
+ * does not die (or buffer input) while looking away. Unpausing is an explicit
+ * keypress, so returning to the tab never resumes on its own. Exported so the
+ * listener glue can be asserted directly; bootstrap calls it once.
+ */
+export function wireFocusPolicy(targetWindow: Window, targetDocument: Document, app: App): void {
+  targetWindow.addEventListener('blur', () => app.handleBlur());
+  targetDocument.addEventListener('visibilitychange', () => {
+    app.handleVisibilityChange(targetDocument.hidden);
+  });
 }
 
 function bootstrap(
@@ -112,13 +125,7 @@ function bootstrap(
     },
   });
 
-  // Focus policy: losing the window or hiding the tab pauses play so the
-  // player does not die (or buffer input) while looking away. Unpausing is an
-  // explicit keypress, so returning to the tab never resumes on its own.
-  window.addEventListener('blur', () => app.handleBlur());
-  document.addEventListener('visibilitychange', () => {
-    app.handleVisibilityChange(document.hidden);
-  });
+  wireFocusPolicy(window, document, app);
 
   app.start();
 }

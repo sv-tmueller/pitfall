@@ -20,6 +20,9 @@
         image-rendering: pixelated;
       }
 
+      /* These values mirror PALETTE night/bone/lethal from
+         src/render/palette.ts. Change both sides together; palette.test.ts
+         fails the build if they drift apart. */
       #boot-error {
         position: absolute;
         left: 50%;
