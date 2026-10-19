@@ -258,3 +258,92 @@ describe('moveAndCollide - dynamic solids', () => {
     expect(withEmpty).toEqual(baseline);
   });
 });
+
+describe('moveAndCollide - rising-platform tunneling (issue #168)', () => {
+  // A tall empty grid so only the dynamic solid can affect the result; the
+  // platform rises without bound over the simulation.
+  const emptyGrid = parseGrid(Array.from({ length: 60 }, () => '....'));
+
+  const GRAVITY = 900;
+  const TERMINAL = 400;
+  const RISE = -60 * DT; // one pixel per step, rising
+
+  /**
+   * Drops a body from ~32 px of clearance onto a platform rising one pixel per
+   * step, stepped to convergence. Each step the platform's top advances from
+   * its start-of-step position (startY) to its end-of-step position (y), the
+   * same shape collectActiveSolids feeds the solver. Returns the settled body
+   * and the platform's final top edge.
+   */
+  function settleOnRisingPlatform(width: number): { body: Body; platformTop: number } {
+    let platformTop = 200;
+    let body = makeBody({ x: 0, y: platformTop - 32 - 16, velocity: { x: 0, y: 0 } });
+
+    for (let i = 0; i < 400; i++) {
+      body = {
+        ...body,
+        velocity: { x: 0, y: Math.min(body.velocity.y + GRAVITY * DT, TERMINAL) },
+      };
+      const startY = platformTop;
+      const endY = platformTop + RISE;
+      const platform: SolidRect = { x: 0, y: endY, width, height: 16, startY };
+      body = moveAndCollide(body, emptyGrid, DT, [platform]).body;
+      platformTop = endY;
+    }
+
+    return { body, platformTop };
+  }
+
+  it.each([16, 32, 200])(
+    'catches a body falling onto a rising platform (width %i), never tunneling through',
+    (width) => {
+      const { body, platformTop } = settleOnRisingPlatform(width);
+
+      expect(body.grounded).toBe(true);
+      expect(body.velocity.y).toBe(0);
+      // Resting flush on the platform top, not fallen through below it.
+      expect(Math.abs(body.y + body.height - platformTop)).toBeLessThanOrEqual(1);
+    },
+  );
+
+  it('still catches when the body starts at or above the platform top (clearance >= dy)', () => {
+    // Start-of-step top is 40; the body's bottom begins 1 px above it (a
+    // clearance of exactly dy), so the pre-existing guard already fires.
+    const startY = 40;
+    const endY = startY + RISE;
+    const platform: SolidRect = { x: 0, y: endY, width: 32, height: 16, startY };
+    const body = makeBody({ x: 0, y: startY - 16 - 1, velocity: { x: 0, y: 240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform]);
+
+    expect(result.body.grounded).toBe(true);
+    expect(result.body.velocity.y).toBe(0);
+    expect(result.body.y).toBe(endY - 16);
+  });
+
+  it('does not eject a body already inside a stationary solid (anti-pull-out invariant)', () => {
+    // The body overlaps the solid well below its top face. With no startY the
+    // landing guard reads the same end-of-step top as before, so the body is
+    // never pulled out to sit on top.
+    const platform: SolidRect = { x: 0, y: 32, width: 32, height: 16 };
+    const body = makeBody({ x: 0, y: 30, velocity: { x: 0, y: 240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform]);
+
+    expect(result.body.grounded).toBe(false);
+    expect(result.body.y).toBeCloseTo(30 + 240 * DT);
+    expect(result.body.y).not.toBe(16);
+  });
+
+  it('does not eject a body already inside a solid that did not rise this step', () => {
+    // startY === y pins the invariant for a dynamic solid whose displacement
+    // this step is zero: the widened guard must not fire deeper than before.
+    const platform: SolidRect = { x: 0, y: 32, width: 32, height: 16, startY: 32 };
+    const body = makeBody({ x: 0, y: 30, velocity: { x: 0, y: 240 } });
+
+    const result = moveAndCollide(body, emptyGrid, DT, [platform]);
+
+    expect(result.body.grounded).toBe(false);
+    expect(result.body.y).toBeCloseTo(30 + 240 * DT);
+  });
+});

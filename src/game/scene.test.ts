@@ -15,6 +15,8 @@ import {
   spawnToBody,
 } from './constants';
 import { createControllerState } from '../engine/controller';
+import { registerMechanicType } from '../mechanics/registry';
+import type { DynamicSolid } from '../traps/types';
 import { WORLD3_LEVELS } from '../levels/world3/index';
 
 const DT = 1 / 60;
@@ -595,6 +597,35 @@ describe('scene - mechanics integration', () => {
 // Dynamic solids: colliding, crushing, and carrying (issue #158)
 // ===========================================================================
 
+// Test-only mechanic: publishes one dynamic solid at a fixed position every
+// step with a configurable lethal flag and velocity. Lets the crush-rule
+// regressions (issue #168) place a MECHANIC solid directly on the player
+// without needing a shipped mechanic that publishes one. Registered at module
+// load; the name is unique so it never collides with the shipped types.
+registerMechanicType('test-solid', (entry) => {
+  const solid: DynamicSolid = {
+    id: entry.id,
+    x: Number(entry.params.x),
+    y: Number(entry.params.y),
+    width: Number(entry.params.width),
+    height: Number(entry.params.height),
+    velocityX: Number(entry.params.velocityX ?? 0),
+    velocityY: Number(entry.params.velocityY ?? 0),
+    solid: true,
+    lethal: entry.params.lethal === true,
+  };
+  return {
+    id: entry.id,
+    type: entry.type,
+    step() {
+      return { dynamicSolids: [solid] };
+    },
+    reset() {
+      // Fixed solid: nothing to restore.
+    },
+  };
+});
+
 /**
  * Six-row open shaft: ceiling, four open rows, floor. Spawn and exit are
  * tile positions; traps and mechanics are passed through verbatim so a test
@@ -735,6 +766,50 @@ describe('scene - dynamic solids (issue #158)', () => {
 
     expect(sawTurnaround).toBe(true);
     expect(s.controller.body.grounded).toBe(true);
+  });
+
+  it('a stationary lethal mechanic solid kills via the lethal arm (issue #168)', () => {
+    // The test mechanic parks a lethal solid exactly on the player's spawn and
+    // never moves it, so the moved-kill arm cannot fire (the trap snapshot has
+    // no entry for a mechanic solid). Only the lethal flag can kill here.
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      mechanics: [
+        {
+          id: 'lethal-block',
+          type: 'test-solid',
+          params: { x: 16, y: 64, width: 16, height: 16, lethal: true, velocityX: 0, velocityY: 0 },
+        },
+      ],
+    });
+
+    const s = stepScene(createScene([source]), idle(), DT);
+
+    expect(s.phase).toBe('dying');
+    expect(s.deathsThisLevel).toBe(1);
+  });
+
+  it('a moved non-lethal mechanic solid overlapping the player does NOT crush (issue #168)', () => {
+    // Same overlap, but non-lethal and carrying a velocity. The moved-kill arm
+    // is trap-solids-only by design, so a moved mechanic solid merely blocks;
+    // it must not crush the player here.
+    const source = makeShaftLevel({
+      spawn: { col: 1, row: 4 },
+      exit: { col: 9, row: 1 },
+      mechanics: [
+        {
+          id: 'harmless-block',
+          type: 'test-solid',
+          params: { x: 16, y: 64, width: 16, height: 16, lethal: false, velocityX: 60, velocityY: 0 },
+        },
+      ],
+    });
+
+    const s = stepScene(createScene([source]), idle(), DT);
+
+    expect(s.phase).toBe('playing');
+    expect(s.deathsThisLevel).toBe(0);
   });
 });
 

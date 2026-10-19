@@ -29,6 +29,15 @@ export interface SolidRect {
   readonly y: number;
   readonly width: number;
   readonly height: number;
+  /**
+   * Optional start-of-step top edge for a solid that advanced this step. When
+   * present the landing guard tests the body's original bottom against where
+   * the top BEGAN rather than where it ended, closing the rising-platform
+   * tunneling window (issue #168). The body still lands on the end-of-step
+   * top. Callers that omit it (trap solids, static solids) keep the previous
+   * behavior exactly.
+   */
+  readonly startY?: number;
 }
 
 // const-object stand-in for a const enum: isolatedModules rules const enum out.
@@ -173,12 +182,18 @@ function resolveY(
       }
     }
     // Dynamic solids: land on the top face. The body must have started at or
-    // above that face, mirroring the one-way rule and preventing pull-out
-    // from inside a solid the body already overlaps.
+    // above where the top BEGAN (startY) rather than where it ended (y): a
+    // rising platform cannot legitimately have passed a body whose bottom was
+    // already at or above its start-of-step top, so this closes the window
+    // where a body ending a step just inside the solid fell through next step.
+    // A body genuinely inside the solid (its bottom began below startY) is
+    // still excluded, preserving the no-pull-out invariant. The body lands on
+    // the end-of-step top, keeping flush-edge alignment for riders.
     for (const solid of solids) {
       if (!horizontalRangesOverlap(body, solid)) continue;
       const stop = solid.y - body.height;
-      if (originalBottom <= solid.y && y + body.height > solid.y && stop < y) {
+      const landTop = solid.startY ?? solid.y;
+      if (originalBottom <= landTop && y + body.height > solid.y && stop < y) {
         y = stop;
         resolvedVy = 0;
         grounded = true;
