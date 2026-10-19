@@ -296,9 +296,10 @@ function springLaunchNeighbors(springRiseTiles: number): Array<{ dc: number; dr:
 //     (16x16, cell-aligned, so half-extents of 8 px).
 //   - Downward edges (drops) additionally accept a walk-off composite:
 //     slide one cell toward the drift direction, free-fall the source
-//     column's neighbor, then drift at the landing height. This models
-//     stepping off a ledge without jumping (and falling through one-way
-//     platforms, which never obstruct).
+//     column's neighbor, land, then walk the drift row (footing required
+//     beneath every drifted column). This models stepping off a ledge
+//     without jumping (and falling through one-way platforms, which never
+//     obstruct).
 //   - Walks are swept as a sliding 16x16 box translated one cell.
 //
 // Any sample intersecting a Solid rejects that motion. OneWay and Hazard
@@ -525,26 +526,34 @@ export function sweepEdge(
   }
 
   // ---- Motion 3 (downward edges only): the walk-off composite -------------
-  // Slide one cell toward the drift direction, free-fall that column, then
-  // drift at the landing height. Models stepping off a ledge without
-  // jumping; also the only way to descend through a one-way platform under
-  // a low ceiling.
+  // Slide one cell toward the drift direction, free-fall that column, LAND,
+  // then walk the drift row to the destination column. Models stepping off
+  // a ledge without jumping; also the only way to descend through a
+  // one-way platform under a low ceiling.
+  //
+  // Soundness (#161 fix round): the post-fall drift is a GROUNDED walk, so
+  // every column of the drift row, from the fall column through the
+  // destination, must provide standable footing beneath it. The previous
+  // formulation drifted at the landing altitude with no footing requirement
+  // and short-circuited through a composite bounding-box precheck that
+  // accepted any merely solid-free region, certifying unbounded mid-air
+  // glides across chasms the real controller cannot cross (ballistic drift
+  // on a shallow fall is bounded by MAX_RUN times the fall time, far short
+  // of what the old drift allowed).
   if (enr > er) {
     const dir = Math.sign(nc - col);
     const fallCol = dir === 0 ? col : col + dir;
     const fcx = fallCol * TILE_SIZE + HALF_TILE;
 
-    // Composite bounding box precheck (mirrored vertically when inverted).
-    if (
-      !regionHasSolid(
-        grid,
-        Math.min(sx, ex, fcx) - PLAYER_HALF_EXTENT,
-        (inverted ? H - ey : sy) - PLAYER_HALF_EXTENT,
-        Math.max(sx, ex, fcx) + PLAYER_HALF_EXTENT,
-        (inverted ? H - sy : ey) + PLAYER_HALF_EXTENT,
-      )
-    ) {
-      return true;
+    // Phase 0: footing along the drift row. The fall must land on a
+    // surface in the fall column, and the drift to the destination is a
+    // walk, so every intervening column needs a floor too. isStandable
+    // handles one-way surfaces, moving-platform overrides, and gravity
+    // inversion; a missing floor anywhere in the span rejects the edge.
+    const driftLo = Math.min(fallCol, nc);
+    const driftHi = Math.max(fallCol, nc);
+    for (let cc = driftLo; cc <= driftHi; cc++) {
+      if (!isStandable(grid, cc, nr)) return false;
     }
 
     // Phase A: slide one cell at the source height.
