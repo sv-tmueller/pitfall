@@ -19,21 +19,29 @@ describe('reachability validation (physics-calibrated)', () => {
     expect(validateReachability(level)).toBe(true);
   });
 
-  it('walled-off exit is not reachable (standable spawn)', () => {
+  it('walled-off exit is not reachable (standable spawn AND standable exit)', () => {
     // The original walled-off fixture spawned at (0,1) where tile '1' is
     // solid, so isStandable was false and the validator returned false
-    // vacuously. This version puts the spawn on a real floor so the
-    // rejection exercises the traversal logic: a full-height wall seals
-    // the exit chamber, and no walk, jump, or drop crosses it.
+    // vacuously. The first rewrite fixed the spawn but sat the EXIT on a
+    // Solid tile, so destination-standability rejected before any edge
+    // was swept, which was equally vacuous w.r.t. obstruction checking (AC-2).
+    //
+    // This version makes BOTH endpoints standable and seals the exit
+    // chamber with a wall column that runs the full interior height
+    // (touching the ceiling above and the floor below), so no walk, jump,
+    // or drop can cross it: every candidate edge toward the right chamber
+    // is enumerated, swept, and rejected by the wall. Gutting the sweep
+    // turns this test red (verified during the fix round), proving it
+    // genuinely exercises obstruction checking.
     const veryBlocked = loadLevel({
       name: 'very-blocked',
       cols: 10, rows: 4,
       spawn: { col: 1, row: 2 },
-      exit: { col: 9, row: 2 },
+      exit: { col: 8, row: 2 },
       tiles: [
         '1111111111',
-        '1000000001',
-        '1011111001',
+        '1000100001',
+        '1000100001',
         '1111111111',
       ],
       traps: [],
@@ -698,6 +706,43 @@ describe('swept-path obstruction regressions (#161)', () => {
         '0000000000',
         '0000111111',
         '1111111111',
+      ],
+      traps: [],
+    });
+    expect(validateReachability(level)).toBe(false);
+  });
+
+  it('walk-off drift across an unfloored chasm is NOT reachable (composite soundness)', () => {
+    // Regression for the Motion-3 soundness hole (#161 fix round): the
+    // walk-off composite drifted horizontally at the landing altitude with
+    // no footing requirement beneath the drift row, and its bounding-box
+    // precheck accepted any merely solid-free region. Counterexample:
+    // 14x9, flush ceiling (row 0 solid) killing every jump arc, spawn
+    // ledge cols 0-3 (top at row 2), a 3-tile moat (cols 4-6, 5 deep),
+    // and a 5-tile-tall pedestal (cols 7-10) with the exit on top at (8,3).
+    //
+    // The only envelope edge toward the exit is the 1-row walk-off drop
+    // from (3,2) to the pedestal top (7,3): ballistic drift on a 1-row
+    // fall is bounded by MAX_RUN * t_fall (~23 px), roughly 40 px short
+    // of the pedestal, so the real player lands in the moat instead. The
+    // moat walls and the pedestal are a 5-tile rise, beyond the 2.35-tile
+    // jump apex, so there is no second chance. Physically unsolvable; the
+    // composite must not certify the drift across the unfloored moat.
+    const level = loadLevel({
+      name: 'chasm-drift',
+      cols: 14, rows: 9,
+      spawn: { col: 1, row: 2 },
+      exit: { col: 8, row: 3 },
+      tiles: [
+        '11111111111111', // row 0: flush ceiling, kills every jump arc
+        '10000000000001', // row 1
+        '10000000000001', // row 2: spawn ledge top (cols 0-3 standable)
+        '11110000000001', // row 3: ledge block, moat mouth, pedestal air
+        '11110001111001', // row 4: pedestal cols 7-10 (top surface)
+        '11110001111001', // row 5
+        '11110001111001', // row 6
+        '11110001111001', // row 7: moat bottom (stands on row 8)
+        '11111111111111', // row 8: floor
       ],
       traps: [],
     });
