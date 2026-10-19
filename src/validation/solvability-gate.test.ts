@@ -80,3 +80,60 @@ describe('solvability gate over all shipped levels (#161)', () => {
     expect(result.status, `"${id}" failed the gate: ${JSON.stringify(result)}`).toBe('solvable');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gate self-verification (issue #161 CP6)
+// ---------------------------------------------------------------------------
+
+describe('gate self-verification (#161)', () => {
+  it('detects a sealed exit: negative verification of the gate itself', () => {
+    // Take a shipping level the gate certifies solvable (spike-room: only
+    // an emerging-spikes trap, so no not-modelled excuse), seal its exit
+    // cell shut in a scratch copy, and require the gate to notice and
+    // declare the copy unsolvable.
+    const baseline = loadLevel(MVP_LEVELS['spike-room']);
+    expect(validateSolvability(baseline).status).toBe('solvable');
+
+    const { col, row } = baseline.exit;
+    const tiles = [...baseline.tiles];
+    const ringOffsets = [
+      [-1, -1], [0, -1], [1, -1],
+      [-1, 0], [1, 0],
+      [-1, 1], [0, 1], [1, 1],
+    ] as const;
+    for (const [dc, dr] of ringOffsets) {
+      const c = col + dc;
+      const r = row + dr;
+      if (c < 0 || c >= baseline.cols || r < 0 || r >= baseline.rows) continue;
+      tiles[r * baseline.cols + c] = 1;
+    }
+    const sealedLevel: typeof baseline = { ...baseline, tiles };
+    const verdict = validateSolvability(sealedLevel);
+    expect(verdict.reachable).toBe(false);
+    expect(verdict.status).toBe('unsolvable');
+  });
+
+  it('cross-check: every level the completion tests prove completable validates solvable', () => {
+    // The five simulated completions in src/game/fake-exit-completion.test.ts
+    // (four hopBot levels plus the mvp/15 finale) must all be certified by
+    // the gate, either solvable or (per the advisor ruling) allowlisted.
+    // A contradiction here would be a validator soundness bug, not a test
+    // casualty.
+    const completionProven: ReadonlyArray<[string, unknown]> = [
+      ['fake-door', MVP_LEVELS['fake-door']],
+      ['maze-of-doors', MVP_LEVELS['maze-of-doors']],
+      ['world-2-finale', WORLD2_LEVELS['world-2-finale']],
+      ['glitch', WORLD3_LEVELS['glitch']],
+      ['finale', MVP_LEVELS.finale],
+    ];
+
+    for (const [id, source] of completionProven) {
+      const result = validateSolvability(loadLevel(source));
+      const allowlisted = ALLOWLIST[id] !== undefined;
+      expect(
+        result.status === 'solvable' || allowlisted,
+        `"${id}" is proven completable by simulation but the gate neither certifies nor allowlists it (${JSON.stringify(result)})`,
+      ).toBe(true);
+    }
+  });
+});
