@@ -558,7 +558,7 @@ describe('reachability with gravity inversion', () => {
     //   cols: 10, rows: 6
     //   Row 0: '1111111111' — full ceiling
     //   Row 1: '1000000000'
-    //   Row 2: '1000011111' — solid at cols 5-9 (ceiling for inverted area)
+    //   Row 2: '1000010111' — inverted floor with a HATCH at col 6
     //   Row 3: '1000000000'
     //   Row 4: '1111100000' — floor left side only
     //   Row 5: '1111111111' — solid floor
@@ -568,10 +568,14 @@ describe('reachability with gravity inversion', () => {
     // Spawn (1, 3): normal, below (1, 4) = solid ✓
     // Exit (8, 1): inside zone, above (8, 0) = solid ✓ (inverted)
     //
-    // Path: (1,3) → walk → (4,3) [normal, below=solid ✓]
-    //   → walk → (5,3) [inside zone, above (5,2)=solid ✓]
-    //   → walk → (8,3) [inside zone, above=solid ✓]
-    //   → drop↑2 → (8,1) [above (8,0)=solid ✓]
+    // Path (physically swept, no clipping solids):
+    //   (1,3) → walk → (4,3) [normal, below=solid ✓]
+    //   → walk → (5,3) [inside zone, above (5,2)=solid ✓ hangs from slab]
+    //   → inverted drop via col 6: slide to (6,3), fall UP through the
+    //     hatch at (6,2), land at (6,1) [above (6,0)=solid ✓]
+    //   → walk → (8,1) along the hanging corridor.
+    // The hatch is required: without it the row-2 slab seals the exit
+    // corridor and the old test's path clipped the solid at (8,2).
     const level = loadLevel({
       name: 'partial-gravity',
       cols: 10, rows: 6,
@@ -580,7 +584,7 @@ describe('reachability with gravity inversion', () => {
       tiles: [
         '1111111111',
         '1000000000',
-        '1000011111',
+        '1000010111',
         '1000000000',
         '1111100000',
         '1111111111',
@@ -598,20 +602,12 @@ describe('reachability with gravity inversion', () => {
   });
 
   it('partial gravity zone WITHOUT the zone is unreachable', () => {
-    // Without the zone, the right side has no floor (row 4 cols 5-9 empty)
-    // and the exit at (8, 1) has no surface below (row 2 col 8 = solid,
-    // but in NORMAL gravity, standable requires surface BELOW, which is
-    // row 2 = solid → actually standable!). Let me check:
-    // (8, 1): passable (Empty) ✓. Below (8, 2) = solid → standable ✓!
-    // So the exit IS standable without the zone. But can the player reach it?
-    // (1, 3) → walk → (4, 3) [below (4, 4) = solid ✓]
-    // (5, 3): below (5, 4) = '0' → not standable. Gap in floor.
-    // Can the player jump from (4, 3) to (8, 1)? dc=4, rise=2.
-    // Envelope: 4/4 + 2/2 = 2 > 1 → NO.
-    // Jump from (4, 3) to (8, 3)? dc=4, dr=0. Flat jump 4 tiles = MAX_FLAT_GAP.
-    // (8, 3): below (8, 4) = '0' → not standable. ✗
-    // Jump from (4, 3) to (6, 1)? dc=2, rise=2. Envelope: 2/4 + 2/2 = 1.5 > 1. ✗
-    // So without the zone, unreachable ✓.
+    // Same hatched geometry but no gravity zone. The exit at (8, 1) has no
+    // surface below in normal gravity (row 2 col 8 = solid ABOVE it, not
+    // below), and nothing lifts the player to the row-1 corridor: the
+    // right side has no floor (row 4 cols 5-9 empty), the row-1 cells sit
+    // under a solid ceiling, and every jump envelope into row 1 clips the
+    // row-2 slab or the ceiling. Verified unreachable.
     const level = loadLevel({
       name: 'partial-no-zone',
       cols: 10, rows: 6,
@@ -620,7 +616,7 @@ describe('reachability with gravity inversion', () => {
       tiles: [
         '1111111111',
         '1000000000',
-        '1000011111',
+        '1000010111',
         '1000000000',
         '1111100000',
         '1111111111',
