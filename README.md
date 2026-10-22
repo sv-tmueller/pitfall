@@ -51,4 +51,4 @@ npm run typecheck    # tsc --noEmit
 
 ## License
 
-See `docs/licensing.md` for details. Code is MIT licensed. Art and audio are original and licensed separately.
+© 2026 Thomas Mueller. All rights reserved. Source shown for reference only. See [LICENSE](LICENSE).

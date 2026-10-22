@@ -1,7 +1,7 @@
 {
   "name": "pitfall",
   "version": "0.0.0",
-  "license": "SEE LICENSE IN docs/licensing.md",
+  "license": "UNLICENSED",
   "private": true,
   "type": "module",
   "engines": {
